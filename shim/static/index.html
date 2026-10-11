@@ -546,6 +546,15 @@ $("bar").onsubmit = (e) => {
     if (previous) previous.card.replaceWith(card);
     else tools.append(card);
     candidates.set(key, {data, state, card});
+    // Map iteration preserves discovery order within each group. Move existing
+    // cards so promoting a tool keeps other tools' input and call results intact.
+    const ordered = [...candidates.values()];
+    ordered.sort((a, b) => Number(b.state === "verified") - Number(a.state === "verified"));
+    let nextCard = tools.firstChild;
+    for (const tool of ordered) {
+      if (tool.card !== nextCard) tools.insertBefore(tool.card, nextCard);
+      nextCard = tool.card.nextSibling;
+    }
     const counts = {candidate:0, checking:0, verified:0, failed:0};
     for (const tool of candidates.values()) counts[tool.state]++;
     toolProgress.textContent = `${candidates.size} discovered · ${counts.candidate} waiting · ${counts.checking} verifying · ${counts.verified} verified · ${counts.failed} failed`;

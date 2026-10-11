@@ -188,7 +188,7 @@ async def _compile_site(
     candidates = {}
     early_checks = {}
     early_definitions = {}
-    form_signatures = set()
+    discovered_forms = {}
     early_barrier = allow_writes
     seen_links = set()
     discovery_host = host
@@ -258,22 +258,25 @@ async def _compile_site(
                 await announce(action)
                 start_check(action, probes)
 
-    async def on_page(page: Any, result: Any) -> None:
+    async def discover_forms(descriptors):
         nonlocal early_barrier
-        coverage.pages_crawled += 1
-        page_html[page.url] = page.html
-        await _emit(emit, {"type": "page", "url": page.url, "title": page.title})
         probes = probe_terms(list(page_html.values()))
-        for descriptor in getattr(result, "forms", []):
-            if descriptor.signature in form_signatures:
+        for descriptor in descriptors:
+            if descriptor.signature in discovered_forms:
                 continue
-            form_signatures.add(descriptor.signature)
+            discovered_forms[descriptor.signature] = descriptor
             produced, _ = form_to_actions(descriptor)
             for action in produced:
                 await announce(action)
                 if not _independent(action):
                     early_barrier = True
                 start_check(action, probes)
+
+    async def on_page(page: Any, result: Any) -> None:
+        coverage.pages_crawled += 1
+        page_html[page.url] = page.html
+        await _emit(emit, {"type": "page", "url": page.url, "title": page.title})
+        await discover_forms(getattr(result, "forms", []))
         await discover_links(page)
 
     async def explore_agent():
@@ -291,7 +294,10 @@ async def _compile_site(
                 start_check(action, probe_terms(list(page_html.values())))
             elif event.get("type") == "agent_page":
                 from .explore.crawl import CrawledPage
+                from .translate.forms import parse_forms
                 page = CrawledPage(url=event["url"], html=event["html"], title=event.get("title"))
+                page_html[page.url] = page.html
+                await discover_forms(parse_forms(page.html, page.url))
                 await discover_links(page)
                 await _emit(emit, {"type": "page", "url": page.url, "title": page.title,
                                    "source": "agent"})
@@ -387,6 +393,18 @@ async def _compile_site(
                 "requests": [o.compact() for o in agent_result.observed if o.interesting],
                 "summary": agent_result.summary, "model_trace": agent_result.model_trace,
                 "errors": agent_result.errors}, indent=1))
+
+    # Rendered forms can arrive after the HTTP translation stage, or survive a
+    # later agent failure. Keep their verified candidates in the final interface.
+    http_form_signatures = {descriptor.signature for descriptor in crawled.forms}
+    for signature, descriptor in discovered_forms.items():
+        if signature not in http_form_signatures:
+            produced, skips = form_to_actions(descriptor)
+            actions.extend(produced)
+            coverage.skipped.extend(skips)
+            for skip in skips:
+                await _emit(emit, {"type": "skip", **skip.model_dump()})
+    coverage.forms_found = len(http_form_signatures | set(discovered_forms))
 
     # Links with one varying segment are detail-page tools: /ebooks/1342 and
     # /ebooks/84 are one capability, get_ebook(id), not two pages.

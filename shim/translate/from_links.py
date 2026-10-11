@@ -17,6 +17,19 @@ from bs4 import BeautifulSoup
 from ..manifest import Action, Extract, HttpBackend, InputSchema, PropertySchema, Source
 
 MIN_MEMBERS = 4
+# A named collection supplies evidence that short alphabetic siblings are
+# resource identifiers too: /projects/uildl need not contain digits or hyphens.
+# Keep this narrower than arbitrary navigation sections such as /about/team.
+RESOURCE_COLLECTIONS = {
+    "article", "articles", "book", "books", "ebook", "ebooks", "event", "events",
+    "item", "items", "podcast", "podcasts", "post", "posts", "product", "products",
+    "project", "projects", "recipe", "recipes",
+}
+RESOURCE_NAVIGATION = {
+    "about", "all", "archive", "archives", "careers", "contact", "create", "edit",
+    "faq", "help", "history", "index", "new", "overview", "press", "team",
+}
+MIN_RESOURCE_MEMBERS = 3
 NOISE = {"page", "tag", "tags", "category", "categories", "wiki", "search", "cdn", "static",
          "assets", "img", "images", "css", "js", "api", "feed", "rss", "login", "account"}
 
@@ -30,6 +43,14 @@ def _looks_like_id(values: list[str]) -> bool:
         return True
     rich = sum(1 for v in values if any(ch.isdigit() for ch in v) or "-" in v)
     return rich / len(values) >= 0.8
+
+
+def _resource_details(vary: int, members: list[list[str]], values: list[str]) -> bool:
+    """A bounded fallback for observed detail siblings in a named collection."""
+    return (len(values) >= MIN_RESOURCE_MEMBERS and bool(members)
+            and vary == len(members[0]) - 1
+            and members[0][vary - 1].lower() in RESOURCE_COLLECTIONS
+            and not any(value.lower() in RESOURCE_NAVIGATION for value in values))
 
 
 def _singular(noun: str) -> str:
@@ -85,7 +106,8 @@ def link_actions(links: list[str]) -> list[Action]:
         clean = [m for m in members if m[vary].lower() not in NOISE and len(m[vary]) <= 80
                  and not m[vary].lower().endswith((".html", ".htm", ".php", ".aspx"))]
         values = sorted({m[vary] for m in clean})
-        if len(values) < MIN_MEMBERS or not _looks_like_id(values):
+        if not ((len(values) >= MIN_MEMBERS and _looks_like_id(values))
+                or _resource_details(vary, clean, values)):
             continue
         if fixed and fixed[0][1].lower() in NOISE:
             continue

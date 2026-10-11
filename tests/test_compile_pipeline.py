@@ -163,6 +163,50 @@ def test_rendered_links_verify_during_agent_exploration(tmp_path, monkeypatch):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize('agent_failure', [False, True])
+def test_rendered_forms_verify_during_exploration_and_survive_agent_failure(tmp_path, monkeypatch, agent_failure):
+    monkeypatch.setattr(compiler, 'SITES_DIR', tmp_path)
+    monkeypatch.setattr(import_module('shim.config'), 'config', lambda: Config(anthropic_api_key='test'))
+    monkeypatch.setattr(import_module('shim.translate.describe'), 'make_completer', lambda *a, **kw: None)
+
+    async def run():
+        verified = asyncio.Event()
+        events, checks = [], []
+        html = '<main><form action="/lookup"><input name="q"><button>Search</button></form></main>'
+        async def crawl(url, **kwargs):
+            return CrawlResult(pages=[CrawledPage(url, '<main>Loading</main>')])
+        class Explorer:
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+            async def run(self, url):
+                for _ in range(2):
+                    await self.emit({'type': 'agent_page', 'url': url, 'html': html})
+                await asyncio.wait_for(verified.wait(), 1)
+                if agent_failure:
+                    raise ValueError('Final model response failed')
+                return AgentResult(pages=[CrawledPage(url, html)], procedure=[Step(note='Use tools')])
+        async def check(action, *args, **kwargs):
+            checks.append(action.backend.url)
+            action.check = CheckResult(passed=True, status=200, items_found=1)
+            return action, None
+        async def emit(event):
+            events.append(event)
+            if event['type'] == 'action':
+                verified.set()
+        monkeypatch.setattr(compiler, 'crawl', crawl)
+        monkeypatch.setattr(compiler, 'check_action', check)
+        monkeypatch.setattr(import_module('shim.explore.agent'), 'AgentExplorer', Explorer)
+        manifest = await compiler.compile_site('https://site.test/', agent=True, emit=emit)
+        assert verified.is_set()
+        assert checks == ['https://site.test/lookup']
+        assert len(manifest.actions) == 1 and manifest.coverage.forms_found == 1
+        kinds = [event['type'] for event in events]
+        assert kinds.index('action') < next(i for i, event in enumerate(events)
+                                          if event['type'] == 'stage_end' and event['stage'] == 'agent')
+        assert all('html' not in event for event in events)
+    asyncio.run(run())
+
+
 def test_agent_replacement_requires_its_own_extractor_verification(tmp_path, monkeypatch):
     from shim.translate.from_links import collect_links, link_actions
     monkeypatch.setattr(compiler, 'SITES_DIR', tmp_path)

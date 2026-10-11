@@ -130,7 +130,7 @@ def _serve(args: argparse.Namespace) -> int:
 
 def _web(args: argparse.Namespace) -> int:
     import uvicorn
-    uvicorn.run("shim.web:app", host="127.0.0.1", port=args.port, log_level="warning")
+    uvicorn.run("shim.web:app", host=args.bind, port=args.port, log_level="warning")
     return 0
 
 
@@ -174,6 +174,7 @@ def main(argv: list[str] | None = None) -> int:
     p_serve.add_argument("host")
 
     p_web = sub.add_parser("web", help="start the demo frontend")
+    p_web.add_argument("--bind", default="127.0.0.1", help="listen address; use 0.0.0.0 for LAN access")
     p_web.add_argument("--port", type=int, default=8808)
 
     args = parser.parse_args(argv)

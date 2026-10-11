@@ -147,3 +147,90 @@ def test_candidates_stream_into_verified_callable_tools_before_compile_finishes(
             await browser.close()
 
     asyncio.run(run())
+
+
+def test_verified_tools_sort_first_and_preserve_other_cards_call_state():
+    async def run():
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            page = await browser.new_page()
+            calls = []
+
+            async def route(req):
+                if "/api/config" in req.request.url:
+                    await req.fulfill(json={"exploration_available": False})
+                elif "/api/sites" in req.request.url:
+                    await req.fulfill(json={"sites": []})
+                elif "/api/call" in req.request.url:
+                    calls.append(json.loads(req.request.post_data))
+                    await req.fulfill(json={"status": 200, "records": [{"title": "Retained result"}]})
+                else:
+                    await req.fulfill(content_type="text/html", body=Path("shim/static/index.html").read_text())
+
+            await page.route("http://shim.test/**", route)
+            await page.add_init_script("""
+                window.EventSource = class {
+                    constructor() { window.compileStream = this; }
+                    close() {}
+                };
+                window.emitCompileEvent = event => window.compileStream.onmessage({data:JSON.stringify(event)});
+            """)
+            await page.goto("http://shim.test")
+            await page.locator("#url").fill("https://site.test")
+            await page.locator("#go").click()
+
+            async def emit(kind, candidate):
+                await page.evaluate("event => window.emitCompileEvent(event)", {
+                    "type": kind, "candidate_id": candidate, "name": candidate, "tier": "read",
+                    "run_id": "saved-version", "live_id": "live-registry",
+                    "schema": {"properties": {"query": {"type": "string"}}, "required": ["query"]},
+                    "error": "No records extracted" if kind == "action_failed" else None,
+                })
+
+            async def order():
+                return await page.locator("[data-candidate-id]").evaluate_all(
+                    "cards => cards.map(card => card.dataset.candidateId)")
+
+            for candidate in ("c1", "c2", "c3", "c4", "c5"):
+                await emit("tool_candidate", candidate)
+            await emit("action_failed", "c1")
+            await emit("tool_checking", "c4")
+            assert await order() == ["c1", "c2", "c3", "c4", "c5"]
+
+            # Tools found later jump above earlier failed, waiting, and checking
+            # candidates as soon as their verification completes.
+            await emit("action", "c5")
+            assert await order() == ["c5", "c1", "c2", "c3", "c4"]
+            await emit("action", "c3")
+            assert await order() == ["c3", "c5", "c1", "c2", "c4"]
+            card = page.locator('[data-candidate-id="c3"]')
+            await card.get_by_label("Arguments for c3").fill("custom query")
+            await card.get_by_role("button", name="Call", exact=True).click()
+            await card.get_by_text('"Retained result"', exact=False).wait_for()
+
+            # Reordering existing cards must retain user input, results, and the
+            # live call handler, rather than rebuilding every card.
+            await emit("action", "c2")
+            assert await order() == ["c2", "c3", "c5", "c1", "c4"]
+            assert await card.get_by_label("Arguments for c3").input_value() == "custom query"
+            assert '"Retained result"' in await card.inner_text()
+            await card.get_by_role("button", name="Call", exact=True).click()
+            await card.get_by_text('"Retained result"', exact=False).wait_for()
+            assert len(calls) == 2
+            assert calls[-1]["candidate_id"] == "c3"
+            assert calls[-1]["live_id"] == "live-registry"
+            assert calls[-1]["arguments"] == {"query": "custom query"}
+
+            # Actual failure demotes a verified card to its original discovery
+            # position; late checking messages still cannot demote completed tools.
+            await emit("action_failed", "c2")
+            assert await order() == ["c3", "c5", "c1", "c2", "c4"]
+            assert await page.locator('[data-candidate-id="c2"]').get_by_role("button", name="Call", exact=True).count() == 0
+            await emit("tool_checking", "c3")
+            assert await order() == ["c3", "c5", "c1", "c2", "c4"]
+            assert await card.get_attribute("data-tool-state") == "verified"
+            assert await page.locator("[data-candidate-id]").count() == 5
+            assert "2 verified · 2 failed" in await page.locator(".tool-progress").inner_text()
+            await browser.close()
+
+    asyncio.run(run())
