@@ -33,7 +33,11 @@ def load_manifest(host: str) -> Manifest:
         raise FileNotFoundError(
             f"no manifest for {host}. Run: shim compile <url>"
         )
-    return Manifest.model_validate_json(path.read_text())
+    manifest = Manifest.model_validate_json(path.read_text())
+    if manifest.run_id:
+        from .history import load_version
+        return load_version(host, manifest.run_id)
+    return manifest
 
 
 def save_manifest(manifest: Manifest) -> Path:
@@ -72,6 +76,9 @@ async def compile_site(
     agent = cfg.has_model and not use_browser if agent is None else agent
     if agent and not intent:
         intent = "Learn this site's representative capabilities and compile a reusable agent-readable interface."
+    from .history import new_run, publish_run
+    run_id, run_dir = new_run(host)
+    await _emit(emit, {"type": "run", "host": host, "run_id": run_id})
 
     coverage = Coverage()
     await _emit(emit, {"type": "stage", "stage": "explore", "url": url})
@@ -126,8 +133,14 @@ async def compile_site(
             from .explore.agent import AgentExplorer
             from .translate.describe import AnthropicCompleter
             await _emit(emit, {"type": "stage", "stage": "agent", "intent": intent})
+            async def checkpoint(result):
+                (run_dir / "raw" / "checkpoint.json").write_text(json.dumps({
+                    "recipe": result.recipe, "observed": [o.__dict__ for o in result.observed],
+                    "pages": [{"url": p.url, "title": p.title, "html": p.html} for p in result.pages],
+                    "model_trace": result.model_trace, "errors": result.errors,
+                    "site_description": result.site_description, "notes": result.notes}, indent=1))
             explorer = AgentExplorer(AnthropicCompleter(_cfg(), on_event=emit, max_tokens=8192), intent, on_event=emit,
-                                     allow_writes=allow_writes)
+                                     allow_writes=allow_writes, on_checkpoint=checkpoint)
             try:
                 agent_result = await explorer.run(url)
             except Exception as exc:
@@ -147,12 +160,13 @@ async def compile_site(
                                    "tools": [a.name for a in agent_result.tools],
                                    "summary": agent_result.summary})
                 actions.extend(agent_result.tools)
-                raw_dir = manifest_path(host).parent / "raw"
+                raw_dir = run_dir / "raw"
                 raw_dir.mkdir(parents=True, exist_ok=True)
                 (raw_dir / "agent-trace.json").write_text(json.dumps({
                     "intent": intent, "recipe": agent_result.recipe,
                     "requests": [o.compact() for o in agent_result.observed if o.interesting],
-                    "summary": agent_result.summary}, indent=1))
+                    "summary": agent_result.summary, "model_trace": agent_result.model_trace,
+                    "errors": agent_result.errors}, indent=1))
 
     # Links with one varying segment are detail-page tools: /ebooks/1342 and
     # /ebooks/84 are one capability, get_ebook(id), not two pages.
@@ -272,6 +286,7 @@ async def compile_site(
         })
 
     manifest = Manifest(
+        run_id=run_id,
         site=f"{urlsplit(url).scheme}://{host}",
         host=host,
         compiled_at=datetime.now(timezone.utc).isoformat(),
@@ -285,15 +300,15 @@ async def compile_site(
         coverage=coverage,
     )
 
-    path = save_manifest(manifest)
+    path = await publish_run(manifest, run_dir)
 
     # Publish every front door, not just ours.
-    from .emit import emit_all
-    emitted = emit_all(manifest, path.parent / "agent")
+    emitted = list((run_dir / "agent").iterdir())
 
     await _emit(emit, {
         "type": "done",
         "host": host,
+        "run_id": run_id,
         "path": str(path),
         "shipped": coverage.actions_shipped,
         "generated": coverage.actions_generated,

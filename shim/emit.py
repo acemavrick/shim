@@ -148,7 +148,7 @@ def llms_txt(manifest: Manifest) -> str:
         lines.append("")
 
     for proc in manifest.procedures:
-        lines += [f"## How to: {proc.intent}", ""]
+        lines += [f"## Instructions (not independently verified): {proc.intent}", ""]
         for i, step in enumerate(proc.steps, 1):
             if step.action:
                 args = ", ".join(f"{k}={v}" for k, v in step.with_.items())
@@ -195,6 +195,8 @@ def llms_txt(manifest: Manifest) -> str:
         f"- HTTP directly: see `./calls.sh`",
         "",
     ]
+    if any(a.backend.kind == "browser" for a in actions):
+        lines += ["Browser recipes run through MCP/Python only; OpenAPI, WebMCP and curl exports omit them.", ""]
     return "\n".join(lines)
 
 

@@ -151,7 +151,7 @@ def resolve_fields(
     return params
 
 
-async def send_http(backend: HttpBackend, args: dict[str, Any]) -> RawResponse:
+async def send_http(backend: HttpBackend, args: dict[str, Any], *, require_read_policy: bool = False) -> RawResponse:
     page_values = None
     if backend.refetch_from and any(f.from_ == "page" for f in backend.fields.values()):
         page_values = await _refetch_hidden_fields(backend.refetch_from)
@@ -172,6 +172,12 @@ async def send_http(backend: HttpBackend, args: dict[str, Any]) -> RawResponse:
         url = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
         return await _polite_fetch("GET", url, params=params, headers=backend.headers)
 
+    if require_read_policy:
+        from ..config import config
+        from ..safety import post_is_approved
+        if not post_is_approved(target, dict(params), config().read_post_rules):
+            raise ValueError("Read POST is not approved by operator policy")
+
     # Encode the body ourselves: httpx treats a non-dict `data=` as a byte
     # stream, which on an AsyncClient fails as "sync request", and a dict
     # would collapse repeated field names that forms legitimately send.
@@ -186,7 +192,8 @@ async def send_http(backend: HttpBackend, args: dict[str, Any]) -> RawResponse:
     origin = f"{parts.scheme}://{parts.netloc}"
     headers = {"origin": origin, "referer": backend.refetch_from or origin + "/",
                **backend.headers, "content-type": content_type}
-    return await _polite_fetch("POST", target, content=body, headers=headers)
+    # A 307/308 must never replay an authorized body to an unauthorized target.
+    return await _polite_fetch("POST", target, content=body, headers=headers, follow_redirects=False)
 
 
 @dataclass
@@ -204,13 +211,22 @@ async def invoke_action(action: Action, args: dict[str, Any]) -> CallResult:
 
     Tier enforcement lives in the server, not here -- this layer always obeys.
     """
-    if action.backend.kind != "http":
+    if action.backend.kind == "browser":
+        if action.tier != "read":
+            raise ValueError("Browser recipes are read-only")
+        from .browser import replay_browser
+        res = await replay_browser(action.backend, args)
+    elif action.backend.kind == "http":
+        if action.tier == "read" and action.backend.method == "POST":
+            res = await send_http(action.backend, args, require_read_policy=True)
+        else:
+            res = await send_http(action.backend, args)
+    else:
         raise NotImplementedError(
             f'action "{action.name}" uses the {action.backend.kind} backend, '
             "which this build does not implement"
         )
 
-    res = await send_http(action.backend, args)
     extracted: ExtractResult = run_extract(res.body, action.extract, res.url)
     return CallResult(
         records=extracted.records,

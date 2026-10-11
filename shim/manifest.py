@@ -115,7 +115,21 @@ class ScriptBackend(Strict):
     file: str
 
 
-Backend = Annotated[Union[HttpBackend, ScriptBackend], Field(discriminator="kind")]
+class BrowserStep(Strict):
+    action: Literal["goto", "click", "fill", "select", "press", "scroll", "back"]
+    role: str | None = None
+    name: str | None = None
+    text: str | None = None
+    url: str | None = None
+
+
+class BrowserBackend(Strict):
+    kind: Literal["browser"] = "browser"
+    start_url: str
+    steps: list[BrowserStep] = Field(max_length=12)
+
+
+Backend = Annotated[Union[HttpBackend, ScriptBackend, BrowserBackend], Field(discriminator="kind")]
 
 
 # --------------------------------------------------------------- extract
@@ -150,6 +164,8 @@ class CheckResult(Strict):
     """
 
     input: dict[str, Any] = Field(default_factory=dict)
+    control_input: dict[str, Any] | None = None
+    control_status: int | None = None
     passed: bool = False
     items_found: int | None = None
     status: int | None = None
@@ -250,6 +266,7 @@ class Procedure(Strict):
 
 
 class Manifest(Strict):
+    run_id: str | None = None
     site: str
     host: str
     compiled_at: str

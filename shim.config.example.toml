@@ -20,3 +20,8 @@ user_agent = "shim-compiler/0.1 (site-to-agent translation layer)"
 # Verify non-read actions. Only ever enable for sites you own -- it fires
 # real writes (bookings, orders, messages) at whatever you point it at.
 allow_writes = false
+# Conservative default: every unknown POST is blocked during read-only exploration.
+# Operators may declare exact, reviewed read requests (including the complete body).
+# [[safety.read_post_rules]]
+# url = "https://your-site.example/api/lookup"
+# body = { operation = "list_public_items" }

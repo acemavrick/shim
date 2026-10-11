@@ -93,3 +93,31 @@ def test_irreversible_call_requires_confirmation(saved, monkeypatch):
     monkeypatch.setattr(web, "invoke_action", forbidden)
     response = request("POST", "/api/call", json={"host": "books.test", "action": "search", "arguments": {"query": "books"}})
     assert response.json()["status"] == "confirmation_required"
+
+
+def test_versions_bind_manifest_artifacts_and_calls(saved, monkeypatch):
+    from shim.history import new_run, publish_run
+    from shim.runtime.http import CallResult
+    async def publish():
+        first, directory = new_run(saved.host)
+        await publish_run(saved.model_copy(update={"run_id": first}), directory)
+        second, directory = new_run(saved.host)
+        updated = saved.model_copy(deep=True)
+        updated.run_id = second
+        updated.actions[0].description = "A changed tool"
+        await publish_run(updated, directory)
+        return first, second
+    first, second = asyncio.run(publish())
+    assert request("GET", f"/api/manifest/{saved.host}").json()["run_id"] == second
+    assert request("GET", f"/api/manifest/{saved.host}", params={"run_id": first}).json()["actions"][0]["description"] == "Search books"
+    assert "Search books" in request("GET", f"/agent/{saved.host}/manifest.json", params={"run_id": first}).text
+    seen = []
+    async def invoke(action, args):
+        seen.append(action.description)
+        return CallResult(records=[], items_found=0, status=200, bytes=0, url="https://books.test")
+    monkeypatch.setattr(web, "invoke_action", invoke)
+    response = request("POST", "/api/call", json={"host": saved.host, "run_id": first, "action": "search", "arguments": {"query": "books"}})
+    assert response.status_code == 200
+    assert seen == ["Search books"]
+    assert len(request("GET", f"/api/history/{saved.host}").json()["versions"]) == 3  # includes legacy
+    assert request("GET", f"/api/manifest/{saved.host}", params={"run_id": "../../secret"}).status_code == 422

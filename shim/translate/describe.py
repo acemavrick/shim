@@ -121,8 +121,8 @@ def build_prompt(action: Action, form_html: str, body_a: str, body_b: str,
                  input_a: dict[str, Any], input_b: dict[str, Any],
                  intent: str | None = None) -> str:
     backend = action.backend
-    assert backend.kind == "http"
-    fields = {k: v.model_dump(by_alias=True) for k, v in backend.fields.items()}
+    fields = {k: v.model_dump(by_alias=True) for k, v in backend.fields.items()} if backend.kind == "http" else {}
+    request = f"{backend.method} {backend.url}" if backend.kind == "http" else backend.model_dump_json()
     return (
         (f"THE PERSON COMPILING THIS SITE WANTS AN AGENT TO BE ABLE TO: {intent}\n"
          f"Use this to choose names and descriptions. Do not reject a tool merely "
@@ -131,7 +131,7 @@ def build_prompt(action: Action, form_html: str, body_a: str, body_b: str,
         f"name={action.name} tier={action.tier}\ndescription={action.description}\n"
         f"extract={action.extract.model_dump(exclude_none=True)}\n\n"
         f"FORM:\n{form_html}\n\n"
-        f"REQUEST: {backend.method} {backend.url}\nfields={json.dumps(fields)}\n\n"
+        f"REQUEST OR FIXED RECIPE: {request}\nfields={json.dumps(fields)}\n\n"
         f"RESPONSE A (input {json.dumps(input_a)}):\n{_trim_html(body_a)}\n\n"
         f"RESPONSE B (input {json.dumps(input_b)}):\n{_trim_html(body_b)}\n"
     )

@@ -59,6 +59,7 @@
   }
   button:hover:not(:disabled) { opacity: .88; }
   button:disabled { opacity: .45; cursor: default; }
+  select { max-width:100%; padding:10px 12px; background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:9px; }
 
   .presets { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 36px; }
   .presets span { color: var(--faint); font-size: 12.5px; margin-right: 2px; }
@@ -226,6 +227,7 @@ for (const [label, url, intent] of PRESETS) {
 }
 
 let currentHost = null;
+let currentRun = null;
 let runTimer = null, inputTokens = 0, outputTokens = 0, modelCalls = 0;
 let evidenceLog = [];
 function showEvidence(entry) {
@@ -237,11 +239,11 @@ function stopRun() {
   $("go").disabled = false;
   document.querySelectorAll("#presets button, #library button").forEach(b => b.disabled = false);
 }
-function artifacts(host, formats) {
+function artifacts(host, formats, runId = currentRun) {
   const row = el("nav", "artifacts");
   for (const name of formats || []) {
     const a = el("a", null, name);
-    a.href = `/agent/${encodeURIComponent(host)}/${encodeURIComponent(name)}`;
+    a.href = `/agent/${encodeURIComponent(host)}/${encodeURIComponent(name)}` + (runId ? `?run_id=${encodeURIComponent(runId)}` : "");
     a.target = "_blank"; a.rel = "noopener"; row.append(a);
   }
   return row;
@@ -249,6 +251,7 @@ function artifacts(host, formats) {
 function overview(m) {
   const section = el("section", "card");
   section.append(el("h2", null, "About this site"));
+  if (m.run_id) section.append(el("p", "desc", `Compilation ${m.run_id} · ${m.compiled_at || ""}`));
   section.append(el("p", "desc", m.site_description || m.pages?.[0]?.title || "Site overview unavailable; see readable pages."));
   if (m.pages?.length) {
     const details = el("details"); details.append(el("summary", null, `Readable content (${m.pages.length} pages)`));
@@ -261,6 +264,45 @@ function overview(m) {
   }
   return section;
 }
+function savedProcedures(m) {
+  const section = el("section");
+  if (!m.procedures?.length) return section;
+  section.append(el("h2", "section", "Instructions — not independently verified"));
+  for (const procedure of m.procedures) {
+    const details = el("details", "card");
+    details.append(el("summary", null, procedure.intent || "Browser instructions"));
+    for (const step of procedure.steps) details.append(el("pre", "out", JSON.stringify(step, null, 2)));
+    section.append(details);
+  }
+  return section;
+}
+async function showSaved(site, runId = site.run_id) {
+  const res = await fetch(`/api/manifest/${encodeURIComponent(site.host)}` + (runId ? `?run_id=${encodeURIComponent(runId)}` : ""));
+  if (!res.ok) throw new Error("Could not load saved compilation");
+  const m = await res.json(); currentHost = m.host; currentRun = m.run_id || null;
+  $("results").replaceChildren(el("h2", null, `Saved: ${m.host}`), overview(m));
+  const historyResponse = await fetch(`/api/history/${encodeURIComponent(site.host)}`);
+  if (historyResponse.ok) {
+    const data = await historyResponse.json();
+    if (data.versions?.length) {
+      const select = el("select"); select.setAttribute("aria-label", "Compilation history");
+      for (const version of data.versions) {
+        const option = el("option", null, `${version.compiled_at} · ${version.actions} tools`);
+        option.value = version.run_id; option.selected = version.run_id === currentRun; select.append(option);
+      }
+      select.onchange = () => showSaved(site, select.value).catch(err => setStage(String(err), false));
+      $("results").append(select);
+      site = {...site, formats: data.versions.find(v => v.run_id === currentRun)?.formats || site.formats};
+    }
+  }
+  $("results").append(el("h2", "section", "Verified tools"));
+  for (const a of m.actions.filter(a => a.check?.passed))
+    $("results").append(actionCard({...a, host:m.host, run_id:m.run_id, definition:a, inputs:Object.keys(a.input.properties), schema:a.input, items_found:a.check.items_found}));
+  if (m.exploration_summary) $("results").append(el("h2", "section", "Observed discoveries"), el("p", "desc", m.exploration_summary));
+  for (const note of m.notes || []) $("results").append(el("p", "desc", note));
+  $("results").append(savedProcedures(m), el("h2", "section", "Produced files"), artifacts(m.host, site.formats));
+  setStage("saved compilation — no model run", false);
+}
 async function loadLibrary() {
   try {
     const data = await (await fetch("/api/sites")).json();
@@ -270,17 +312,7 @@ async function loadLibrary() {
       b.type = "button";
       b.onclick = async () => {
         try {
-          const res = await fetch(`/api/manifest/${encodeURIComponent(site.host)}`);
-          if (!res.ok) throw new Error("Could not load saved compilation");
-          const m = await res.json(); currentHost = m.host;
-          $("results").replaceChildren(el("h2", null, `Saved: ${m.host}`));
-          $("results").append(overview(m));
-          if (m.exploration_summary) $("results").append(el("p", "desc", m.exploration_summary));
-          for (const a of m.actions.filter(a => a.check?.passed))
-            $("results").append(actionCard({...a, definition:a, inputs:Object.keys(a.input.properties), schema:a.input, items_found:a.check.items_found}));
-          for (const note of m.notes || []) $("results").append(el("p", "desc", note));
-          $("results").append(el("h2", "section", "Produced files"), artifacts(m.host, site.formats));
-          setStage("saved compilation — no model run", false);
+          await showSaved(site);
         } catch (err) { setStage(String(err), false); }
       };
       $("library").append(b);
@@ -311,6 +343,7 @@ function logLine(text) {
 
 function actionCard(ev) {
   const toolHost = ev.host || currentHost;
+  const toolRun = ev.run_id || currentRun;
   const card = el("div", "card");
   const head = el("div", "card-head");
 
@@ -324,6 +357,10 @@ function actionCard(ev) {
   }
   card.append(head);
   card.append(el("p", "desc", ev.description));
+  if (ev.definition?.check) {
+    const check = el("details"); check.append(el("summary", null, "Verification evidence"));
+    check.append(el("pre", "out", JSON.stringify(ev.definition.check, null, 2))); card.append(check);
+  }
   if (ev.definition) {
     const details = el("details", "tool-code");
     details.append(el("summary", null, "Request and extractor code"));
@@ -354,7 +391,11 @@ function actionCard(ev) {
         let args = names.length === 0 ? {} : names.length === 1 ? {[names[0]]:input.value} : JSON.parse(input.value);
         for (const [name, prop] of Object.entries(ev.schema?.properties || {})) {
           if (args[name] === undefined) continue;
-          if (prop.type === "integer" || prop.type === "number") args[name] = Number(args[name]);
+          if (prop.type === "integer" || prop.type === "number") {
+            if (args[name] === "" || !Number.isFinite(Number(args[name]))) throw new Error(`${name} must be a number`);
+            args[name] = Number(args[name]);
+            if (prop.type === "integer" && !Number.isInteger(args[name])) throw new Error(`${name} must be an integer`);
+          }
           if (prop.type === "boolean" && typeof args[name] === "string") {
             if (!["true", "false"].includes(args[name])) throw new Error(`${name} must be true or false`);
             args[name] = args[name] === "true";
@@ -365,6 +406,7 @@ function actionCard(ev) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             host: toolHost, action: ev.name,
+            run_id: toolRun,
             arguments: args,
           }),
         });
@@ -394,6 +436,7 @@ $("bar").onsubmit = (e) => {
   if (!url) return;
 
   try { currentHost = new URL(url).host; } catch { return; }
+  currentRun = null;
 
   $("go").disabled = true;
   $("results").innerHTML = "";
@@ -418,6 +461,8 @@ $("bar").onsubmit = (e) => {
 
   source.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
+    if (ev.type === "run") { currentRun = ev.run_id; logLine(`compilation ${ev.run_id}`); }
+    if (ev.type === "agent_write_down_batch") $("activity").textContent = `Compiling capability batch ${ev.batch}/${ev.total}…`;
 
     if (ev.type === "model_start") {
       modelCalls++; $("model").textContent = ev.model;
@@ -463,7 +508,7 @@ $("bar").onsubmit = (e) => {
       setStage(`agent finished: ${ev.summary || ""}`, true);
     } else if (ev.type === "action") {
       if (!toolHeader) {
-        toolHeader = el("h2", "section", "Tools shipped");
+        toolHeader = el("h2", "section", "Verified tools");
         $("results").append(toolHeader, tools);
       }
       tools.append(actionCard(ev));
@@ -482,12 +527,13 @@ $("bar").onsubmit = (e) => {
       $("activity").textContent = ev.message;
       source.close(); stopRun();
     } else if (ev.type === "done") {
+      currentRun = ev.run_id || currentRun;
       setStage(ev.blocked ? "stopped — the site blocks automated access" : "compiled", false);
       $("activity").textContent = "Saved. Calling shipped tools does not run a model.";
       $("results").prepend(overview(ev));
-      fetch(`/api/manifest/${encodeURIComponent(ev.host)}`).then(r => r.json()).then(m => {
+      fetch(`/api/manifest/${encodeURIComponent(ev.host)}` + (ev.run_id ? `?run_id=${encodeURIComponent(ev.run_id)}` : "")).then(r => r.json()).then(m => {
         const old = $("results").querySelector("section.card");
-        if (currentHost === ev.host && old) old.replaceWith(overview(m));
+        if (currentHost === ev.host && (!ev.run_id || currentRun === ev.run_id) && old) old.replaceWith(overview(m));
       }).catch(() => {});
       if (ev.exploration_summary) {
         $("results").append(el("h2", "section", "What exploration found"), el("p", "desc", ev.exploration_summary));
@@ -512,7 +558,7 @@ $("bar").onsubmit = (e) => {
       $("results").append(sum);
 
       if (ev.procedures && ev.procedures.length) {
-        const h = el("h2", "section", "How to");
+        const h = el("h2", "section", "Instructions — not independently verified");
         $("results").append(h);
         for (const proc of ev.procedures) {
           const card = el("div", "card");

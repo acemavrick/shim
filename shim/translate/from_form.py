@@ -227,8 +227,10 @@ def dedupe_actions(actions: list[Action]) -> tuple[list[Action], list[Skip]]:
 
     for action in actions:
         backend = action.backend
-        assert backend.kind == "http"
-        key = (backend.method, backend.url.split("#")[0], ",".join(sorted(backend.fields)))
+        if backend.kind == "http":
+            key = (backend.method, backend.url.split("#")[0], ",".join(sorted(backend.fields)))
+        else:
+            key = (backend.kind, backend.model_dump_json(), "")
         if key in seen:
             skips.append(
                 Skip(

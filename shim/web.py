@@ -30,13 +30,18 @@ STATIC = Path(__file__).parent / "static"
 app = FastAPI(title="shim", docs_url=None, redoc_url=None)
 
 
-def saved_manifest(host: str):
+def saved_manifest(host: str, run_id: str | None = None):
     if not re.fullmatch(r"[A-Za-z0-9._:\[\]-]+", host) or host in {".", ".."}:
         raise HTTPException(422, "Invalid site host")
     try:
+        if run_id:
+            from .history import load_version
+            return load_version(host, run_id)
         return load_manifest(host)
     except FileNotFoundError:
         raise HTTPException(404, "No saved site found. Compile this website first.")
+    except ValueError:
+        raise HTTPException(422, "Invalid compilation version")
 
 
 @app.get("/api/config")
@@ -61,15 +66,20 @@ async def sites() -> dict[str, Any]:
             manifest = load_manifest(path.parent.name)
         except Exception:
             continue
+        output = path.parent / "agent"
+        if manifest.run_id:
+            from .history import version_dir
+            output = version_dir(manifest.host, manifest.run_id) / "agent"
         out.append({
             "host": manifest.host,
             "site": manifest.site,
             "compiled_at": manifest.compiled_at,
+            "run_id": manifest.run_id,
             "actions": len(servable(manifest)),
             "intent": manifest.intent,
             "procedures": len(manifest.procedures),
             "records": sum(len(p.records) for p in manifest.pages),
-            "formats": sorted(p.name for p in (path.parent / "agent").glob("*") if p.is_file()),
+            "formats": sorted(p.name for p in output.glob("*") if p.is_file()),
         })
     return {"sites": out}
 
@@ -123,11 +133,12 @@ class CallRequest(BaseModel):
     action: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     confirm: bool = False
+    run_id: str | None = None
 
 
 @app.post("/api/call")
 async def call(req: CallRequest) -> dict[str, Any]:
-    manifest = saved_manifest(req.host)
+    manifest = saved_manifest(req.host, req.run_id)
     action = next((a for a in servable(manifest) if a.name == req.action), None)
     if action is None:
         raise HTTPException(404, f"No verified action {req.action!r}")
@@ -145,7 +156,7 @@ async def call(req: CallRequest) -> dict[str, Any]:
     arguments.update(req.arguments)
     try:
         result = await invoke_action(action, arguments)
-    except (httpx.HTTPError, ValueError, NotImplementedError) as exc:
+    except (httpx.HTTPError, ValueError, NotImplementedError, TimeoutError) as exc:
         raise HTTPException(502, f"The saved tool could not run: {exc}")
     return {
         "action": action.name,
@@ -191,11 +202,14 @@ def validate_arguments(action: Action, arguments: dict[str, Any]) -> None:
 
 
 @app.get("/agent/{host}/{filename}")
-async def agent_file(host: str, filename: str) -> FileResponse:
+async def agent_file(host: str, filename: str, run_id: str | None = None) -> FileResponse:
     """Serves the emitted formats, as the site itself would publish them."""
-    saved_manifest(host)
+    manifest = saved_manifest(host, run_id)
     safe = Path(filename).name  # no traversal
     path = SITES_DIR / host / "agent" / safe
+    if manifest.run_id:
+        from .history import version_dir
+        path = version_dir(host, manifest.run_id) / "agent" / safe
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"no {safe} for {host}")
     types = {
@@ -207,6 +221,13 @@ async def agent_file(host: str, filename: str) -> FileResponse:
 
 
 @app.get("/api/manifest/{host}")
-async def manifest(host: str) -> dict[str, Any]:
-    m = saved_manifest(host)
+async def manifest(host: str, run_id: str | None = None) -> dict[str, Any]:
+    m = saved_manifest(host, run_id)
     return json.loads(m.to_json())
+
+
+@app.get("/api/history/{host}")
+async def history(host: str):
+    saved_manifest(host)
+    from .history import list_versions
+    return {"versions": list_versions(host)}

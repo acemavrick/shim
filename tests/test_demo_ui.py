@@ -5,6 +5,54 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 
+def test_history_ui_binds_old_version_calls_and_artifacts():
+    async def run():
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            page = await browser.new_page(viewport={"width": 1280, "height": 900})
+            calls = []
+            action = {"name": "list_projects", "description": "List projects", "tier": "read",
+                "input": {"properties": {}, "required": []},
+                "backend": {"kind": "http", "method": "GET", "url": "https://site.test/"},
+                "extract": {"kind": "css", "fields": {"title": "h1"}},
+                "check": {"passed": True, "input": {}, "items_found": 1, "status": 200}}
+            async def route(req):
+                url = req.request.url
+                if "/api/config" in url:
+                    await req.fulfill(json={"exploration_available": False})
+                elif "/api/sites" in url:
+                    await req.fulfill(json={"sites": [{"host": "site.test", "actions": 1, "run_id": "new", "formats": ["manifest.json"]}]})
+                elif "/api/history" in url:
+                    await req.fulfill(json={"versions": [{"run_id": v, "compiled_at": v, "actions": 1, "formats": ["manifest.json", "misc.md"]} for v in ("new", "old")]})
+                elif "/api/manifest" in url:
+                    version = "old" if "run_id=old" in url else "new"
+                    await req.fulfill(json={"host": "site.test", "run_id": version, "compiled_at": version,
+                        "site_description": "A project portfolio.", "actions": [action], "pages": [], "notes": ["Resume is a download."],
+                        "procedures": [{"intent": "Read the resume", "steps": [{"note": "Follow the Resume link."}]}]})
+                elif "/api/call" in url:
+                    calls.append(json.loads(req.request.post_data))
+                    await req.fulfill(json={"status": 200, "records": [{"title": "Project"}]})
+                else:
+                    await req.fulfill(content_type="text/html", body=Path("shim/static/index.html").read_text())
+            await page.route("http://shim.test/**", route)
+            await page.goto("http://shim.test")
+            await page.get_by_role("button", name="site.test (1 tools)").click()
+            select = page.get_by_label("Compilation history")
+            await select.select_option("old")
+            await page.get_by_text("Compilation old", exact=False).wait_for()
+            await page.get_by_role("button", name="Call", exact=True).click()
+            await page.get_by_text('"Project"', exact=False).wait_for()
+            assert calls[0]["run_id"] == "old"
+            assert "run_id=old" in await page.get_by_role("link", name="manifest.json", exact=True).get_attribute("href")
+            assert await page.get_by_text("Instructions — not independently verified", exact=True).count() == 1
+            await page.screenshot(path="/tmp/shim-mvp-desktop.png", full_page=True)
+            await page.set_viewport_size({"width": 390, "height": 844})
+            assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            await page.screenshot(path="/tmp/shim-mvp-mobile.png", full_page=True)
+            await browser.close()
+    asyncio.run(run())
+
+
 def test_empty_intent_checkbox_and_runtime_panel_in_real_browser():
     async def run():
         async with async_playwright() as pw:

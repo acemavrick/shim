@@ -17,6 +17,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from .safety import ReadPostRule
 
 CONFIG_FILENAME = "shim.config.toml"
 DEFAULT_MODEL = "claude-sonnet-5"
@@ -39,6 +40,7 @@ class Config:
 
     # Safety
     allow_writes: bool = False
+    read_post_rules: list[ReadPostRule] = field(default_factory=list)
 
     raw: dict[str, Any] = field(default_factory=dict, repr=False)
 
@@ -100,6 +102,7 @@ def load_config(path: Path | None = None) -> Config:
         ),
         respect_robots=bool(compile_opts.get("respect_robots", True)),
         allow_writes=bool(compile_opts.get("allow_writes", False)),
+        read_post_rules=[ReadPostRule.model_validate(r) for r in data.get("safety", {}).get("read_post_rules", [])],
         raw=data,
     )
     return config

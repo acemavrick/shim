@@ -20,6 +20,19 @@ from typing import Any
 from .manifest import Action, CheckResult, Extract, Skip
 from .runtime.extract import run_extract
 from .runtime.http import send_http
+
+
+async def _send(action, args):
+    if action.backend.kind == "browser":
+        if action.tier != "read":
+            raise ValueError("Browser recipes are read-only")
+        from .runtime.browser import replay_browser
+        return await replay_browser(action.backend, args)
+    if action.backend.kind != "http":
+        raise ValueError("Unsupported backend")
+    if action.tier == "read" and action.backend.method == "POST":
+        return await send_http(action.backend, args, require_read_policy=True)
+    return await send_http(action.backend, args)
 from .translate.infer import (
     detail_extract,
     infer_by_diff,
@@ -127,17 +140,22 @@ def sample_args(action: Action, probe: str, variant: int = 0) -> dict[str, Any]:
         needed = name in action.input.required
         if prop.examples:
             value = prop.examples[min(variant, len(prop.examples) - 1)]
-            args[name] = int(value) if prop.type == "integer" else float(value) if prop.type == "number" else value
+            args[name] = (int(value) if prop.type == "integer" else float(value) if prop.type == "number"
+                          else str(value).lower() == "true" if prop.type == "boolean" else value)
             continue
         if prop.enum:
             if needed or prop.default is None:
-                args[name] = prop.default or prop.enum[0]
+                args[name] = prop.enum[min(variant, len(prop.enum) - 1)] if variant else (prop.default or prop.enum[0])
             continue
         if prop.type == "boolean":
-            continue  # a browser omits an unchecked box
+            args[name] = bool(variant)
+            continue
         if prop.type in ("number", "integer"):
             if needed:
-                args[name] = prop.minimum if prop.minimum is not None else 1
+                value = (prop.minimum if prop.minimum is not None else 1) + variant
+                if prop.maximum is not None:
+                    value = min(value, prop.maximum)
+                args[name] = int(value) if prop.type == "integer" else value
             continue
         if needed or not filled_text:
             args[name] = probe
@@ -148,10 +166,7 @@ def sample_args(action: Action, probe: str, variant: int = 0) -> dict[str, Any]:
 
 def has_free_text(action: Action) -> bool:
     """True if some input is open text, i.e. something we can vary."""
-    return any(
-        prop.type == "string" and not prop.enum
-        for prop in action.input.properties.values()
-    )
+    return bool(action.input.properties)
 
 
 def _fingerprint(records: list[dict[str, Any]]) -> str:
@@ -164,7 +179,7 @@ async def _probe_once(
 ) -> tuple[Any, list[dict[str, Any]]] | None:
     """Fires the action and extracts with its current spec. None on transport failure."""
     try:
-        res = await send_http(action.backend, args)
+        res = await _send(action, args)
     except Exception:
         return None
     extracted = run_extract(res.body, action.extract, res.url)
@@ -189,8 +204,8 @@ async def check_action(
     -- an extractor aimed at a sidebar returns a confident, plausible, constant
     answer for every query, which is worse than returning nothing.
     """
-    assert action.backend.kind == "http"
-    host = action.backend.url.split("/")[2] if "//" in action.backend.url else ""
+    url = action.backend.start_url if action.backend.kind == "browser" else getattr(action.backend, "url", "")
+    host = url.split("/")[2] if "//" in url else ""
 
     # Never fire a write at a site we do not own.
     if action.tier != "read" and not (allow_writes or is_local(host)):
@@ -211,7 +226,7 @@ async def check_action(
     for probe in terms:
         args = sample_args(action, probe)
         try:
-            primary = await send_http(action.backend, args)
+            primary = await _send(action, args)
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             continue
@@ -225,25 +240,30 @@ async def check_action(
                 detail=f"HTTP {primary.status}",
             )
 
-        if primary.status >= 400:
+        if not 200 <= primary.status < 300:
             last_error = f"HTTP {primary.status}"
             continue
 
         control_body = None
+        control_status = None
         control_args = {}
         if varies and action.tier == "read":
             control_term = next((t for t in terms if t != probe), f"{probe}qx")
             control_args = sample_args(action, control_term, variant=1)
+            if control_args == args:
+                last_error = "no distinct control input available; parameterized tool is unverified"
+                continue
             if control_args != args:
                 try:
-                    control = await send_http(action.backend, control_args)
+                    control = await _send(action, control_args)
                 except Exception as exc:
                     last_error = f"control probe failed: {type(exc).__name__}: {exc}"
                     continue
-                if control.blocked or control.status >= 400:
+                if control.blocked or not 200 <= control.status < 300:
                     last_error = f"control probe failed: HTTP {control.status}"
                     continue
                 control_body = control.body
+                control_status = control.status
 
         # Model output is the primary translation path. Heuristics are used
         # only when no model is configured, not to rescue invalid proposals.
@@ -277,7 +297,7 @@ async def check_action(
                 provisional = run_extract(primary.body, infer_listing(primary.body), primary.url)
                 control_term = term_from_records(provisional.records, avoid={probe}) or f"{probe}qx"
                 try:
-                    control = await send_http(action.backend, sample_args(action, control_term, variant=1))
+                    control = await _send(action, sample_args(action, control_term, variant=1))
                 except Exception as exc:
                     last_error = f"control probe failed: {type(exc).__name__}: {exc}"
                     continue
@@ -345,6 +365,7 @@ async def check_action(
 
         action.check = CheckResult(
             input=args, passed=True, items_found=len(non_empty),
+            control_input=control_args or None, control_status=control_status,
             status=primary.status, checked_at=datetime.now(timezone.utc).isoformat(),
         )
         return action, None
