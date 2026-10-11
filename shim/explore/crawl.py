@@ -58,6 +58,26 @@ def _same_site(candidate: str, host: str) -> bool:
     return parts.scheme in ("http", "https") and parts.netloc == host
 
 
+def _safe_root_redirect(start_url: str, final_url: str) -> bool:
+    """Allow canonical www aliases and HTTPS upgrades without expanding scope."""
+    try:
+        start, final = urlsplit(start_url), urlsplit(final_url)
+        if (start.scheme not in {"http", "https"} or final.scheme not in {"http", "https"}
+                or not start.hostname or not final.hostname
+                or final.username is not None or final.password is not None
+                or (start.scheme == "https" and final.scheme != "https")):
+            return False
+        if start.hostname.lower().removeprefix("www.") != final.hostname.lower().removeprefix("www."):
+            return False
+        start_default = 443 if start.scheme == "https" else 80
+        final_default = 443 if final.scheme == "https" else 80
+        start_port, final_port = start.port or start_default, final.port or final_default
+        return ((start_port == start_default and final_port == final_default)
+                or (start.scheme == final.scheme and start_port == final_port))
+    except ValueError:
+        return False
+
+
 def _worth_fetching(url: str) -> bool:
     path = urlsplit(url).path.lower()
     return not any(path.endswith(ext) for ext in SKIP_EXTENSIONS)
@@ -98,7 +118,8 @@ async def crawl(
     result = CrawlResult()
     robots = await _load_robots(origin) if cfg.respect_robots else None
 
-    queue = deque([urldefrag(start_url)[0]])
+    root_url = urldefrag(start_url)[0]
+    queue = deque([root_url])
     seen: set[str] = set(queue)
     signatures: set[str] = set()
 
@@ -154,6 +175,25 @@ async def crawl(
             if res.status >= 400 or "html" not in res.content_type:
                 result.pages_failed += 1
                 continue
+
+            if url == root_url:
+                if not _safe_root_redirect(root_url, res.url):
+                    result.skips.append(Skip(what=url, reason="not-useful", detail=f"redirect-out-of-scope: {res.url}"))
+                    continue
+                final = urlsplit(res.url)
+                final_origin = f"{final.scheme}://{final.netloc}"
+                if final_origin != origin:
+                    # The first response establishes the canonical site before
+                    # any links are queued or concurrent child fetches begin.
+                    host, origin = final.netloc, final_origin
+                    robots = await _load_robots(origin) if cfg.respect_robots else None
+            elif not _same_site(res.url, host):
+                result.skips.append(Skip(what=url, reason="not-useful", detail=f"redirect-out-of-scope: {res.url}"))
+                continue
+            if robots and not robots.can_fetch(cfg.user_agent, res.url):
+                result.skips.append(Skip(what=res.url, reason="robots-disallowed"))
+                continue
+            seen.add(urldefrag(res.url)[0])
 
             soup = BeautifulSoup(res.body, "lxml")
             title_tag = soup.select_one("title")

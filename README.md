@@ -74,9 +74,12 @@ operators can approve exact URL/body pairs under `[[safety.read_post_rules]]`.
 
 ## Performance
 
-HTTP crawling and the read-only browser agent begin together. Forms become
-visible as soon as a page arrives, and independent GET checks start during the
-crawl. The UI updates each candidate to checking, verified or failed; verified
+HTTP crawling and the read-only browser agent begin together. Forms and link
+patterns become visible as soon as a page arrives, and independent GET checks
+start during the crawl, including while the agent is still exploring. Rendered
+browser pages feed discovery immediately. Safe www redirects establish the crawl's
+canonical host, so entering `befreed.ai` also discovers `www.befreed.ai` links.
+The UI updates each candidate to checking, verified or failed; verified
 tools are callable immediately through a per-run server registry, before the
 manifest is saved. Candidates cannot be invoked. Browser state reads and safe
 primary/control GET probes overlap. Verification continuously refills available
@@ -87,7 +90,9 @@ can proceed independently. No response cache is used, so runtime calls remain fr
 JSON field specifications and paths are parsed once and cached, rather than per record.
 HTML selectors are compiled once; fields sharing a node reuse it within each record.
 Valid agent proposals reuse their extractors after fresh HTTP verification, avoiding
-redundant model proposals. Failed identical inputs are checked once instead of
+redundant model proposals. A richer proposal replacing a provisional tool must
+pass its own verification; one malformed proposal cannot discard valid siblings.
+Failed identical inputs are checked once instead of
 repeating the same request and model prompt for each crawl-derived probe word.
 CLI/UI telemetry reports phase times, model time and actual token usage.
 
@@ -121,7 +126,7 @@ Eight fresh calls on a controlled 50 ms server with a 5 ms gap took **0.468 s** 
 and **0.132 s** with concurrency four on the optimized build. These measurements
 do not predict arbitrary websites or full model-assisted exploration latency.
 
-The latest four-decision live Codex CLI run on befreed.ai showed its first
+An earlier four-decision live Codex CLI run on befreed.ai showed its first
 candidate after 1.476 s and finished in 83.503 s with three verified tools.
 A book detail call returned HTTP 200 and one record in 0.254 s. An earlier run
 shipped five tools in about 103 s and passed a real MCP call in 0.239 s. Because

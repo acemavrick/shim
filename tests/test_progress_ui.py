@@ -55,6 +55,36 @@ def test_candidates_stream_into_verified_callable_tools_before_compile_finishes(
             await emit({"type": "stage", "stage": "explore", "active_stages": ["explore", "check"]})
             assert "Crawling the site" in await page.locator("#stage-text").text_content()
             assert "Verifying tools" in await page.locator("#stage-text").text_content()
+            await emit({"type": "stage", "stage": "agent", "step_budget": 16,
+                        "active_stages": ["agent", "explore", "check"]})
+            assert "Up to 16 steps" in await page.locator("#exploration-progress").inner_text()
+            await emit({"type": "stage", "stage": "translate", "forms": 2,
+                        "active_stages": ["agent", "translate"]})
+            assert "Reading 2 form(s)" in await page.locator("#stage-text").text_content()
+            await emit({"type": "agent_step", "step": 3, "action": "goto", "name": "https://site.test/projects"})
+            await emit({"type": "model_start", "model": "test-model"})
+            await emit({"type": "stage_end", "stage": "translate", "active_stages": ["agent"]})
+            assert await page.locator("#stage-text").text_content() == "Agent exploring"
+            assert "Waiting for model response" in await page.locator("#activity").inner_text()
+            assert "Last completed step 3 / 16" in await page.locator("#exploration-progress").inner_text()
+            assert "1 model response" in await page.locator("#model-wait").inner_text()
+            # A concurrent model call is tracked without claiming it is an
+            # additional exploration step.
+            await emit({"type": "model_start", "model": "test-model"})
+            assert "2 model responses" in await page.locator("#model-wait").inner_text()
+            await emit({"type": "model_usage", "input_tokens": 10, "output_tokens": 5, "elapsed_ms": 100})
+            assert "1 model response" in await page.locator("#model-wait").inner_text()
+            assert "Last completed step 3 / 16" in await page.locator("#exploration-progress").inner_text()
+            await emit({"type": "model_error", "error": "request failed"})
+            assert await page.locator("#model-wait").is_hidden()
+            await emit({"type": "stage_end", "stage": "agent", "active_stages": []})
+            assert await page.locator("#stage-text").text_content() == "Finishing compilation"
+            assert "Exploration finished" in await page.locator("#exploration-progress").inner_text()
+            # Older streams without an explicit active-stage list still remove
+            # the completed stage rather than leaving it on screen.
+            await emit({"type": "stage", "stage": "translate", "forms": 1})
+            await emit({"type": "stage_end", "stage": "translate"})
+            assert "Reading" not in await page.locator("#stage-text").text_content()
             await emit({"type": "tool_candidate", "candidate_id": "c1", "name": "original_name", "description": "Found a project list",
                         "tier": "read", "schema": definition["input"], "definition": definition})
             card = page.locator('[data-candidate-id="c1"]')

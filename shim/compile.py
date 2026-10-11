@@ -17,7 +17,7 @@ from time import perf_counter
 from urllib.parse import urlsplit
 
 from .check import check_action, probe_terms, sample_args
-from .explore.crawl import crawl
+from .explore.crawl import crawl, _safe_root_redirect
 from .manifest import Coverage, Manifest, Page, Skip
 from .translate.from_form import dedupe_actions, form_to_actions
 
@@ -186,9 +186,11 @@ async def _compile_site(
     slots = asyncio.Semaphore(cfg.check_concurrency)
     candidates = {}
     early_checks = {}
+    early_definitions = {}
     form_signatures = set()
     early_barrier = allow_writes
     seen_links = set()
+    discovery_host = host
 
     def key(action):
         backend = action.backend
@@ -225,6 +227,36 @@ async def _compile_site(
                                   "error": checked.check.error if checked.check else skip.detail})
             return checked, skip
 
+    def definition(action):
+        # A request-shaped match alone cannot transfer a verification to a new
+        # extractor, schema, session policy, or observed source.
+        return action.model_dump(by_alias=True, exclude={"name", "description", "check"})
+
+    def start_check(action, probes):
+        request_key = key(action)
+        if not early_barrier and _independent(action) and request_key not in early_checks:
+            early_definitions[request_key] = definition(action)
+            early_checks[request_key] = (list(probes), _group.create_task(
+                verify(action.model_copy(deep=True), probes, early_describer)))
+
+    async def discover_links(page):
+        nonlocal discovery_host
+        page_parts = urlsplit(page.url)
+        # Preserve the user's library key, while following the root's www alias
+        # for discovery. Unrelated origins never widen the candidate surface.
+        if _safe_root_redirect(url, page.url):
+            discovery_host = page_parts.netloc
+        page_html[page.url] = page.html
+        seen_links.update(collect_links([(page.url, page.html)], discovery_host))
+        probes = probe_terms(list(page_html.values()))
+        # Keep origin clusters separate: link_actions chooses the origin of its
+        # first link, so mixing alias hosts could fabricate request templates.
+        for origin_host in sorted({urlsplit(link).netloc for link in seen_links}):
+            links = sorted(link for link in seen_links if urlsplit(link).netloc == origin_host)
+            for action in link_actions(links):
+                await announce(action)
+                start_check(action, probes)
+
     async def on_page(page: Any, result: Any) -> None:
         nonlocal early_barrier
         coverage.pages_crawled += 1
@@ -240,30 +272,28 @@ async def _compile_site(
                 await announce(action)
                 if not _independent(action):
                     early_barrier = True
-                if not early_barrier and key(action) not in early_checks:
-                    early_checks[key(action)] = (list(probes), _group.create_task(
-                        verify(action.model_copy(deep=True), probes, early_describer)))
-        seen_links.update(collect_links([(page.url, page.html)], host))
-        # Link patterns are visible immediately. Their verification follows the
-        # agent proposals so richer observed evidence keeps its precedence.
-        for action in link_actions(sorted(seen_links)):
-            await announce(action)
-            if not agent and not early_barrier and key(action) not in early_checks:
-                early_checks[key(action)] = (list(probes), _group.create_task(
-                    verify(action.model_copy(deep=True), probes, early_describer)))
+                start_check(action, probes)
+        await discover_links(page)
 
     async def explore_agent():
         from .explore.agent import AgentExplorer
-        await _emit(emit, {"type": "stage", "stage": "agent", "intent": intent})
+        await _emit(emit, {"type": "stage", "stage": "agent", "intent": intent,
+                           "step_budget": cfg.agent_steps})
         async def agent_event(event):
+            nonlocal early_barrier
             if event.get("type") == "agent_tool":
                 from .manifest import Action
                 action = Action.model_validate(event["definition"])
                 await announce(action)
-                if _independent(action) and not early_barrier and key(action) not in early_checks:
-                    probes = probe_terms(list(page_html.values()))
-                    early_checks[key(action)] = (list(probes), _group.create_task(
-                        verify(action.model_copy(deep=True), probes, early_describer)))
+                if not _independent(action):
+                    early_barrier = True
+                start_check(action, probe_terms(list(page_html.values())))
+            elif event.get("type") == "agent_page":
+                from .explore.crawl import CrawledPage
+                page = CrawledPage(url=event["url"], html=event["html"], title=event.get("title"))
+                await discover_links(page)
+                await _emit(emit, {"type": "page", "url": page.url, "title": page.title,
+                                   "source": "agent"})
             else:
                 await _emit(emit, event)
         async def checkpoint(result):
@@ -360,7 +390,12 @@ async def _compile_site(
     # Links with one varying segment are detail-page tools: /ebooks/1342 and
     # /ebooks/84 are one capability, get_ebook(id), not two pages.
     from .translate.from_links import collect_links, link_actions
-    linked = link_actions(collect_links([(p.url, p.html) for p in crawled.pages], host))
+    for page in crawled.pages:
+        await discover_links(page)
+    linked = []
+    for origin_host in sorted({urlsplit(link).netloc for link in seen_links}):
+        linked.extend(link_actions(sorted(link for link in seen_links
+                                         if urlsplit(link).netloc == origin_host)))
     if linked:
         await _emit(emit, {"type": "stage", "stage": "links",
                            "patterns": [a.backend.url for a in linked if a.backend.kind == "http"]})
@@ -399,6 +434,11 @@ async def _compile_site(
         if cached is not None:
             early_probes, task = cached
             checked, skip = await task
+            if early_definitions[key(action)] != definition(action):
+                # Richer agent evidence keeps precedence, but must pass its own
+                # check. The provisional tool remains callable until this
+                # replacement starts verification.
+                return await verify(action, probes, describer)
             if skip is None:
                 return checked, skip
             tried = {json.dumps(sample_args(action, term), sort_keys=True) for term in early_probes}

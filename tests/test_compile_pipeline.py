@@ -1,5 +1,6 @@
 import asyncio
 from importlib import import_module
+import pytest
 
 from shim import compile as compiler
 from shim.config import Config
@@ -71,6 +72,171 @@ def test_checks_refill_before_slowest_predecessor_finishes(monkeypatch):
         results = [name async for name, _, _ in compiler._checked_actions(
             actions, [], allow_writes=False, describer=None, concurrency=2)]
         assert results == ['a0', 'a1', 'a2']
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('agent_failure', [False, True])
+def test_redirected_link_tools_verify_before_agent_finishes(tmp_path, monkeypatch, agent_failure):
+    monkeypatch.setattr(compiler, 'SITES_DIR', tmp_path)
+    monkeypatch.setattr(import_module('shim.config'), 'config', lambda: Config(anthropic_api_key='test'))
+    monkeypatch.setattr(import_module('shim.translate.describe'), 'make_completer', lambda *a, **kw: None)
+
+    async def run():
+        verified = asyncio.Event()
+        agent_finished = False
+        checks = []
+
+        async def crawl(url, on_page, **kwargs):
+            html = ''.join(f'<a href="/books/{i}">Book {i}</a>' for i in range(1, 5))
+            page = CrawledPage('https://www.site.test/', html)
+            result = CrawlResult(pages=[page])
+            await on_page(page, result)
+            return result
+
+        class Explorer:
+            def __init__(self, *args, **kwargs):
+                pass
+            async def run(self, url):
+                nonlocal agent_finished
+                await asyncio.wait_for(verified.wait(), 1)
+                agent_finished = True
+                if agent_failure:
+                    raise ValueError('Invalid final interface')
+                return AgentResult(procedure=[Step(note='Use tools')])
+
+        async def check(action, *args, **kwargs):
+            checks.append(action.backend.url)
+            action.check = CheckResult(passed=True, status=200, items_found=1)
+            return action, None
+
+        async def emit(event):
+            if event['type'] == 'action' and not agent_finished:
+                verified.set()
+
+        monkeypatch.setattr(compiler, 'crawl', crawl)
+        monkeypatch.setattr(compiler, 'check_action', check)
+        monkeypatch.setattr(import_module('shim.explore.agent'), 'AgentExplorer', Explorer)
+        manifest = await compiler.compile_site('https://site.test/', agent=True, emit=emit)
+        assert verified.is_set()
+        assert manifest.host == 'site.test'
+        assert checks == ['https://www.site.test/books/{id}']
+        assert len(manifest.actions) == 1
+        assert bool([skip for skip in manifest.coverage.skipped if skip.what == 'agent']) == agent_failure
+    asyncio.run(run())
+
+
+def test_rendered_links_verify_during_agent_exploration(tmp_path, monkeypatch):
+    monkeypatch.setattr(compiler, 'SITES_DIR', tmp_path)
+    monkeypatch.setattr(import_module('shim.config'), 'config', lambda: Config(anthropic_api_key='test'))
+    monkeypatch.setattr(import_module('shim.translate.describe'), 'make_completer', lambda *a, **kw: None)
+
+    async def run():
+        verified = asyncio.Event()
+        events = []
+        async def crawl(url, **kwargs):
+            return CrawlResult(pages=[CrawledPage(url, '<main>Loading</main>')])
+
+        class Explorer:
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+            async def run(self, url):
+                html = ''.join(f'<a href="/books/{i}">Book {i}</a>' for i in range(1, 5))
+                await self.emit({'type': 'agent_page', 'url': url, 'html': html, 'title': 'Rendered'})
+                await asyncio.wait_for(verified.wait(), 1)
+                return AgentResult(pages=[CrawledPage(url, html)], procedure=[Step(note='Use tools')])
+
+        async def check(action, *args, **kwargs):
+            action.check = CheckResult(passed=True, status=200, items_found=1)
+            return action, None
+        async def emit(event):
+            events.append(event)
+            if event['type'] == 'action':
+                verified.set()
+        monkeypatch.setattr(compiler, 'crawl', crawl)
+        monkeypatch.setattr(compiler, 'check_action', check)
+        monkeypatch.setattr(import_module('shim.explore.agent'), 'AgentExplorer', Explorer)
+        manifest = await compiler.compile_site('https://site.test/', agent=True, emit=emit)
+        assert len(manifest.actions) == 1
+        assert all('html' not in event for event in events)
+        assert next(i for i, e in enumerate(events) if e['type'] == 'action') < next(
+            i for i, e in enumerate(events) if e['type'] == 'agent_done')
+    asyncio.run(run())
+
+
+def test_agent_replacement_requires_its_own_extractor_verification(tmp_path, monkeypatch):
+    from shim.translate.from_links import collect_links, link_actions
+    monkeypatch.setattr(compiler, 'SITES_DIR', tmp_path)
+    monkeypatch.setattr(import_module('shim.config'), 'config', lambda: Config(anthropic_api_key='test'))
+    monkeypatch.setattr(import_module('shim.translate.describe'), 'make_completer', lambda *a, **kw: None)
+
+    async def run():
+        verified = asyncio.Event()
+        html = ''.join(f'<a href="/books/{i}">Book {i}</a>' for i in range(1, 5))
+        richer = link_actions(collect_links([('https://site.test/', html)], 'site.test'))[0]
+        richer.extract = Extract(fields={'title': 'h1'})
+        checks = []
+
+        async def crawl(url, on_page, **kwargs):
+            page = CrawledPage(url, html)
+            result = CrawlResult(pages=[page])
+            await on_page(page, result)
+            return result
+        class Explorer:
+            def __init__(self, *args, **kwargs):
+                pass
+            async def run(self, url):
+                await asyncio.wait_for(verified.wait(), 1)
+                return AgentResult(tools=[richer], procedure=[Step(note='Use tools')])
+        async def check(action, *args, **kwargs):
+            checks.append(dict(action.extract.fields))
+            action.check = CheckResult(passed=True, status=200, items_found=1)
+            return action, None
+        async def emit(event):
+            if event['type'] == 'action':
+                verified.set()
+        monkeypatch.setattr(compiler, 'crawl', crawl)
+        monkeypatch.setattr(compiler, 'check_action', check)
+        monkeypatch.setattr(import_module('shim.explore.agent'), 'AgentExplorer', Explorer)
+        manifest = await compiler.compile_site('https://site.test/', agent=True, emit=emit)
+        assert checks == [{}, {'title': 'h1'}]
+        assert manifest.actions[0].extract.fields == {'title': 'h1'}
+    asyncio.run(run())
+
+
+def test_agent_browser_barrier_precedes_later_http_checks(tmp_path, monkeypatch):
+    from shim.manifest import BrowserBackend, BrowserStep
+    monkeypatch.setattr(compiler, 'SITES_DIR', tmp_path)
+    monkeypatch.setattr(import_module('shim.config'), 'config', lambda: Config(anthropic_api_key='test'))
+    monkeypatch.setattr(import_module('shim.translate.describe'), 'make_completer', lambda *a, **kw: None)
+
+    async def run():
+        calls = []
+        browser = Action(name='read_browser', description='Read', tier='read', input=InputSchema(),
+                         extract=Extract(fields={}), backend=BrowserBackend(start_url='https://site.test/',
+                         steps=[BrowserStep(action='goto', url='https://site.test/next')]))
+        http = Action(name='read_http', description='Read', tier='read', input=InputSchema(),
+                      extract=Extract(fields={}), backend=HttpBackend(method='GET', url='https://site.test/read'))
+        async def crawl(url, **kwargs):
+            return CrawlResult(pages=[CrawledPage(url, '<main>Page</main>')])
+        class Explorer:
+            def __init__(self, *args, on_event, **kwargs):
+                self.emit = on_event
+            async def run(self, url):
+                for action in [browser, http]:
+                    await self.emit({'type': 'agent_tool', 'definition': action.model_dump(by_alias=True)})
+                await asyncio.sleep(0)
+                assert not calls, 'later HTTP checks cannot pass the browser barrier early'
+                return AgentResult(tools=[browser, http], procedure=[Step(note='Use tools')])
+        async def check(action, *args, **kwargs):
+            calls.append(action.backend.kind)
+            action.check = CheckResult(passed=True, status=200, items_found=1)
+            return action, None
+        monkeypatch.setattr(compiler, 'crawl', crawl)
+        monkeypatch.setattr(compiler, 'check_action', check)
+        monkeypatch.setattr(import_module('shim.explore.agent'), 'AgentExplorer', Explorer)
+        manifest = await compiler.compile_site('https://site.test/', agent=True)
+        assert calls == ['browser', 'http']
+        assert len(manifest.actions) == 2
     asyncio.run(run())
 
 

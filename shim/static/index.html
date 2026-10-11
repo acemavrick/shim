@@ -199,6 +199,8 @@
       <div><dt>Model usage</dt><dd id="usage">No calls yet</dd></div>
     </dl>
     <p id="activity" aria-live="polite">Ready. Exploration is read-only.</p>
+    <p id="exploration-progress" class="desc" aria-live="polite" hidden></p>
+    <p id="model-wait" class="desc" hidden></p>
     <details><summary>Browser / devtools evidence</summary><pre id="evidence">DOM, links, network responses and console errors appear here when the model inspects them.</pre></details>
   </section>
 
@@ -466,6 +468,8 @@ $("bar").onsubmit = (e) => {
   $("results").innerHTML = "";
   $("log").innerHTML = "";
   inputTokens = 0; outputTokens = 0; modelCalls = 0;
+  $("exploration-progress").hidden = true;
+  $("model-wait").hidden = true;
   $("usage").textContent = "No calls yet";
   $("evidence").textContent = "Waiting for browser inspection…";
   evidenceLog = [];
@@ -478,12 +482,54 @@ $("bar").onsubmit = (e) => {
   const toolProgress = el("p", "tool-progress");
   toolProgress.setAttribute("role", "status");
   const candidates = new Map();
+  let activeStages = new Set();
+  const stageLabels = new Map();
+  let agentBudget = null, agentStep = 0, agentStarted = false, agentFinished = false;
+  let pendingModelCalls = 0, activityIsStage = false;
   let stageLabel = "Starting compilation";
   let toolHeader = null, skipHeader = null;
 
   function stageWithProgress() {
     const pending = [...candidates.values()].filter(t => t.state === "checking").length;
     setStage(stageLabel + (pending ? ` · ${pending} tool${pending === 1 ? "" : "s"} verifying` : ""), true);
+  }
+  function updateActivity(text, isStage = false) {
+    $("activity").textContent = text;
+    activityIsStage = isStage;
+  }
+  function explorationProgress() {
+    if (!agentStarted) return;
+    const progress = agentStep ? `Last completed step ${agentStep}${agentBudget ? ` / ${agentBudget}` : ""}` :
+      (agentBudget ? `Up to ${agentBudget} steps` : "No steps completed yet");
+    $("exploration-progress").hidden = false;
+    $("exploration-progress").textContent = `${agentFinished ? "Exploration finished" : "Exploration active"} · ${progress}`;
+  }
+  function modelWait() {
+    $("model-wait").hidden = pendingModelCalls === 0;
+    $("model-wait").textContent = `Waiting for ${pendingModelCalls} model response${pendingModelCalls === 1 ? "" : "s"}…`;
+  }
+  function updateStages(ev) {
+    const labels = {agent:"Agent exploring", links:"Reading link patterns", observed:"Reading observed endpoints",
+      describe:"Naming tools", explore:"Crawling the site", translate:"Reading forms", check:"Verifying tools"};
+    const active = ev.active_stages ?? ev.stages;
+    if (Array.isArray(active)) activeStages = new Set(active);
+    else if (ev.type === "stage_end") activeStages.delete(ev.stage);
+    else activeStages = new Set([ev.stage]);
+    if (ev.type === "stage") {
+      stageLabels.set(ev.stage, ev.stage === "translate" ? `Reading ${ev.forms ?? 0} form(s)` :
+        ev.stage === "check" ? `Verifying ${ev.candidates ?? 0} candidate action(s)` : labels[ev.stage] || ev.stage);
+      if (ev.stage === "agent") {
+        agentStarted = true;
+        agentBudget = ev.step_budget ?? ev.budget ?? agentBudget;
+        explorationProgress();
+      }
+    } else if (ev.stage === "agent") {
+      agentFinished = true;
+      explorationProgress();
+    }
+    stageLabel = [...activeStages].map(s => stageLabels.get(s) || labels[s] || s).join(" · ") || "Finishing compilation";
+    stageWithProgress();
+    if (ev.type === "stage" || activityIsStage) updateActivity(stageLabel, true);
   }
   function updateTool(ev) {
     if (!toolHeader) {
@@ -521,50 +567,48 @@ $("bar").onsubmit = (e) => {
       logLine(`${ev.stage}: ${(ev.elapsed_ms / 1000).toFixed(2)}s`);
     } else if (ev.type === "model_start") {
       modelCalls++; $("model").textContent = ev.model;
-      $("activity").textContent = `Waiting for model response (call ${modelCalls})…`;
+      pendingModelCalls++; modelWait();
+      updateActivity(`Waiting for model response (call ${modelCalls})…`);
     } else if (ev.type === "model_usage") {
+      pendingModelCalls = Math.max(0, pendingModelCalls - 1); modelWait();
+      if ($("activity").textContent.startsWith("Waiting for model response"))
+        updateActivity(pendingModelCalls ? $("model-wait").textContent : "Model response received.");
       inputTokens += ev.input_tokens || 0; outputTokens += ev.output_tokens || 0;
       $("usage").textContent = `${inputTokens} in / ${outputTokens} out (${modelCalls} calls)`;
       logLine(`model response ${(ev.elapsed_ms / 1000).toFixed(1)}s${ev.stop_reason === "max_tokens" ? " — output truncated" : ""}`);
     } else if (ev.type === "inspection") {
-      $("activity").textContent = `Inspecting ${ev.tool}${ev.selector ? `: ${ev.selector}` : ""}`;
+      updateActivity(`Inspecting ${ev.tool}${ev.selector ? `: ${ev.selector}` : ""}`);
       showEvidence({tool:ev.tool, step:ev.step, evidence:ev.evidence});
       logLine(`inspect ${ev.tool} (step ${ev.step})`);
     } else if (ev.type === "exploration_blocked") {
       showEvidence({method:ev.method, url:ev.url, resource_type:ev.resource_type, warning:ev.message});
       logLine(`read-only policy blocked ${ev.method || "request"}: ${ev.url}`);
     } else if (ev.type === "model_error" || ev.type === "agent_write_down_failed") {
-      $("activity").textContent = ev.error || ev.message;
+      if (ev.type === "model_error") { pendingModelCalls = Math.max(0, pendingModelCalls - 1); modelWait(); }
+      updateActivity(ev.error || ev.message);
       logLine(`${ev.type}: ${ev.error || ev.message}`);
     } else if (ev.type === "agent_write_down") {
-      $("activity").textContent = "Writing tools, browser instructions and limitations from observed evidence…";
+      updateActivity("Writing tools, browser instructions and limitations from observed evidence…");
     } else if (ev.type === "document_probe") {
       logLine(`direct read ${ev.status}: ${ev.url}`);
     }
 
-    if (ev.type === "stage") {
-      const label = {
-        agent: `An agent is exploring: ${ev.intent || ""}`,
-        links: "Reading link patterns",
-        describe: "Model is naming and describing tools",
-        explore: "Crawling the site",
-        translate: `Reading ${ev.forms ?? 0} form(s)`,
-        check: `Verifying ${ev.candidates ?? 0} candidate action(s)`,
-      }[ev.stage] || ev.stage;
-      const active = ev.active_stages || ev.stages;
-      stageLabel = Array.isArray(active) && active.length ? active.map(s => ({
-        explore:"Crawling the site", check:"Verifying tools", agent:"Agent exploring", describe:"Naming tools",
-      }[s] || s)).join(" · ") : label;
-      stageWithProgress();
-      $("activity").textContent = label;
+    if (ev.type === "stage" || ev.type === "stage_end") {
+      updateStages(ev);
     } else if (ev.type === "page") {
       logLine(`fetched  ${ev.url}`);
     } else if (ev.type === "agent_step") {
+      agentStarted = true;
+      agentStep = ev.step ?? agentStep;
+      agentBudget = ev.step_budget ?? ev.budget ?? agentBudget;
+      if (ev.action === "done") agentFinished = true;
+      explorationProgress();
       logLine(`agent ${ev.failed ? "x" : ">"} ${ev.action} ${JSON.stringify(ev.name)}  ${ev.why || ""}`);
-      $("activity").textContent = `Step ${ev.step}: ${ev.action} ${ev.name || ""}${ev.failed ? ` — ${ev.failed}` : ""}`;
+      updateActivity(`Completed step ${ev.step}${agentBudget ? ` / ${agentBudget}` : ""}: ${ev.action} ${ev.name || ""}${ev.failed ? ` — ${ev.failed}` : ""}`);
     } else if (ev.type === "agent_done") {
       logLine(`agent done — ${ev.steps} steps, ${ev.observed} requests observed`);
-      setStage(`agent finished: ${ev.summary || ""}`, true);
+      agentFinished = true; agentStep = ev.steps ?? agentStep; explorationProgress();
+      updateStages({type:"stage_end", stage:"agent"});
     } else if (["tool_candidate", "tool_checking", "action", "action_failed"].includes(ev.type)) {
       updateTool(ev);
       if (ev.type === "action") logLine(`verified ${ev.name}`);
@@ -580,10 +624,13 @@ $("bar").onsubmit = (e) => {
       row.append(el("span", "what", ev.what || ev.name || ""));
       skips.append(row);
     } else if (ev.type === "error") {
+      $("model-wait").hidden = true;
       setStage(`failed — ${ev.message}`, false);
       $("activity").textContent = ev.message;
       source.close(); stopRun();
     } else if (ev.type === "done") {
+      $("model-wait").hidden = true;
+      if (agentStarted) { agentFinished = true; explorationProgress(); }
       currentRun = ev.live_id ? (ev.run_id || currentRun) : null;
       for (const tool of candidates.values()) {
         delete tool.data.live_id; tool.data.saved = true;
@@ -656,6 +703,7 @@ $("bar").onsubmit = (e) => {
   };
 
   source.onerror = () => {
+    $("model-wait").hidden = true;
     setStage("connection lost", false);
     source.close();
     stopRun();

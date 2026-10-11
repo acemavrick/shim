@@ -217,8 +217,9 @@ class _ToolSpec(BaseModel):
 
 
 class _WriteDown(BaseModel):
-    # Validate candidates separately: one malformed tool must not erase siblings.
-    tools: list[dict[str, Any]] = []
+    # Validate tools independently: one malformed proposal must not erase the
+    # valid siblings or the browser evidence collected for this site.
+    tools: list[Any] = []
     procedure: list[dict[str, Any]] = []
     summary: str = ""
     notes: list[str] = []
@@ -365,6 +366,10 @@ class AgentExplorer:
                 html = group.create_task(page.content())
                 title = group.create_task(page.title())
             result.pages.append(CrawledPage(url=url, html=html.result(), title=title.result()))
+            # Internal evidence for progressive discovery; the compiler consumes
+            # this event rather than forwarding full page HTML to the frontend.
+            await self._emit({"type": "agent_page", "url": url,
+                              "html": html.result(), "title": title.result()})
         except Exception:
             pass
 
@@ -454,7 +459,8 @@ class AgentExplorer:
                         continue
                     if act.action == "done":
                         result.summary = act.summary or ""
-                        await self._emit({"type": "agent_step", "step": step_no, "action": "done",
+                        await self._emit({"type": "agent_step", "step": step_no,
+                                          "step_budget": self.step_budget, "action": "done",
                                           "name": "", "why": act.summary or ""})
                         break
 
@@ -474,7 +480,8 @@ class AgentExplorer:
                     if last_error:
                         entry["failed"] = last_error
                     result.recipe.append(entry)
-                    await self._emit({"type": "agent_step", "step": step_no, "action": act.action,
+                    await self._emit({"type": "agent_step", "step": step_no,
+                                      "step_budget": self.step_budget, "action": act.action,
                                       "name": act.name or act.url or "", "why": act.why or "",
                                       "failed": last_error})
 
@@ -570,7 +577,7 @@ class AgentExplorer:
                     raise ValueError("interface must be a JSON object")
                 # Metadata fields are independently recoverable as well.
                 spec = _WriteDown.model_validate({
-                    "tools": [v for v in payload.get("tools", []) if isinstance(v, dict)] if isinstance(payload.get("tools", []), list) else [],
+                    "tools": payload.get("tools", []) if isinstance(payload.get("tools", []), list) else [],
                     "procedure": [v for v in payload.get("procedure", []) if isinstance(v, dict)] if isinstance(payload.get("procedure", []), list) else [],
                     "notes": [v for v in payload.get("notes", []) if isinstance(v, str)] if isinstance(payload.get("notes", []), list) else [],
                     **{k: payload.get(k, "") if isinstance(payload.get(k, ""), str) else ""
@@ -599,11 +606,28 @@ class AgentExplorer:
         result.notes.extend(note[:2000] for note in spec.notes[:20] if note.strip())
         result.site_description = spec.site_description[:2000]
         result.tools = []
-        for raw_tool in spec.tools[:3]:
+        async def reject(raw, exc):
+            name = str(raw.get("name", "unnamed"))[:80] if isinstance(raw, dict) else "unnamed"
+            if isinstance(exc, ValidationError):
+                # Explain locations without copying raw input values into
+                # saved coverage or events.
+                detail = "; ".join(".".join(str(part) for part in error["loc"]) + ": " + error["msg"]
+                                   for error in exc.errors(include_input=False, include_url=False)[:3])
+            elif isinstance(exc, ValueError):
+                detail = str(exc)[:300]
+            else:
+                detail = type(exc).__name__
+            error = f"candidate {name} rejected: invalid tool proposal ({detail})"
+            result.errors.append(error)
+            await self._emit({"type": "agent_tool_rejected", "name": name, "error": error})
+
+        for raw in spec.tools:
+            if len(result.tools) >= 3:
+                break
             try:
-                t = _ToolSpec.model_validate(raw_tool)
+                t = _ToolSpec.model_validate(raw)
             except ValidationError as exc:
-                result.errors.append(f"invalid candidate: {str(exc)[:300]}")
+                await reject(raw, exc)
                 continue
             if t.backend and t.backend.get("kind") == "browser":
                 from ..manifest import BrowserBackend
@@ -624,8 +648,8 @@ class AgentExplorer:
                         backend=backend, extract=t.extract or Extract())
                     result.tools.append(action)
                     await self._emit({"type": "agent_tool", "definition": action.model_dump(mode="json", by_alias=True, exclude_none=True)})
-                except (ValidationError, ValueError) as exc:
-                    result.errors.append(f"candidate {t.name} rejected: {str(exc)[:300]}")
+                except (ValidationError, ValueError, TypeError) as exc:
+                    await reject(raw, exc)
                 continue
             # A live check must not legitimize an endpoint the model invented.
             pattern = re.escape(t.url.split("?")[0].rstrip("/"))
@@ -641,7 +665,10 @@ class AgentExplorer:
                     raise ValueError(error)
                 action = _tool_to_action(t, start=result.pages[0].url if result.pages else "")
             except (ValidationError, ValueError, TypeError, re.error) as exc:
-                result.errors.append(f"candidate {t.name} rejected: {str(exc)[:300]}")
+                await reject(raw, exc)
+                continue
+            if action is None:
+                result.errors.append(f"candidate {t.name[:80]} rejected: unsupported tool definition")
                 continue
             if action:
                 result.tools.append(action)
