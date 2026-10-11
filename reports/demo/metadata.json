@@ -1,5 +1,4 @@
 {
-  "duration_s": 54,
   "source_site": "https://www.befreed.ai/book/attached-by-amir-levine",
   "saved_compiled_at": "2026-10-11T01:57:10.602924+00:00",
   "tool": "get_book",
@@ -7,70 +6,6 @@
     "slug": "attached-by-amir-levine"
   },
   "replay": "real captured compilation, waiting compressed",
-  "scenes": [
-    {
-      "name": "01_problem",
-      "duration_s": 8,
-      "narration": "Websites are built for people. Agents need reusable tools, with clear inputs, that they can call directly.",
-      "source_trim_s": 2.147,
-      "narration_language": "en-US",
-      "voice": "Samantha",
-      "source_audio_duration_s": 6.468707,
-      "audio_tempo": 1
-    },
-    {
-      "name": "02_website",
-      "duration_s": 8,
-      "narration": "Here is BeFreed's public book page. A person opens a book and reads its title, author, and categories.",
-      "source_trim_s": 1.823,
-      "narration_language": "en-US",
-      "voice": "Samantha",
-      "source_audio_duration_s": 6.311746,
-      "audio_tempo": 1
-    },
-    {
-      "name": "03_incremental",
-      "duration_s": 9,
-      "narration": "Shim discovers tools, then verifies them before allowing calls. This real compilation replay compresses the waiting time.",
-      "source_trim_s": 1.461,
-      "narration_language": "en-US",
-      "voice": "Samantha",
-      "source_audio_duration_s": 7.207937,
-      "audio_tempo": 1
-    },
-    {
-      "name": "04_schema",
-      "duration_s": 9,
-      "narration": "Load the saved compilation. Book details become a reusable tool, with a typed slug input and saved extraction rules.",
-      "source_trim_s": 1.609,
-      "narration_language": "en-US",
-      "voice": "Samantha",
-      "source_audio_duration_s": 6.94712,
-      "audio_tempo": 1
-    },
-    {
-      "name": "05_call",
-      "duration_s": 12,
-      "narration": "Now call the live website. The response is HTTP two hundred, with structured book data. Repeated calls use HTTP directly, without another model invocation.",
-      "source_trim_s": 1.592,
-      "narration_language": "en-US",
-      "voice": "Samantha",
-      "source_audio_duration_s": 10.258231,
-      "audio_tempo": 1
-    },
-    {
-      "name": "06_export",
-      "duration_s": 8,
-      "narration": "Compile once. Export OpenAPI and website documentation, and serve the verified tools through MCP.",
-      "source_trim_s": 1.59,
-      "narration_language": "en-US",
-      "voice": "Samantha",
-      "source_audio_duration_s": 6.559365,
-      "audio_tempo": 1
-    }
-  ],
-  "narration_language": "en-US",
-  "voice": "Samantha",
   "call": {
     "http_transport_status": 200,
     "elapsed_s": 0.255,
@@ -94,6 +29,69 @@
     "source": "https://www.befreed.ai/book/attached-by-amir-levine",
     "blocked": false
   },
+  "duration_s": 35,
+  "audio": "Original light instrumental background music; no narration",
+  "narration": false,
+  "caption_language": "en",
+  "music_source": "demo-music.m4a",
+  "network_requests_during_reedit": 0,
+  "model_calls_during_reedit": 0,
+  "scenes": [
+    {
+      "name": "01_problem",
+      "start_s": 0,
+      "duration_s": 5,
+      "source_start_s": 0,
+      "source_clip": "01_problem.mp4",
+      "caption": "Websites are built for people. Give agents reusable tools.",
+      "crop": null
+    },
+    {
+      "name": "02_website",
+      "start_s": 5,
+      "duration_s": 5,
+      "source_start_s": 0,
+      "source_clip": "02_website.mp4",
+      "caption": "Open a book. Read its details. BeFreed public website · actual browser navigation",
+      "crop": null
+    },
+    {
+      "name": "03_incremental",
+      "start_s": 10,
+      "duration_s": 6,
+      "source_start_s": 0.8,
+      "source_clip": "03_incremental.mp4",
+      "caption": "Discover. Verify. Then call. Real compile replay · waiting compressed",
+      "crop": null
+    },
+    {
+      "name": "04_schema",
+      "start_s": 16,
+      "duration_s": 6,
+      "source_start_s": 0,
+      "source_clip": "04_schema.mp4",
+      "caption": "One input: the book slug. Request and extraction rules are saved.",
+      "crop": "1000:400:140:210"
+    },
+    {
+      "name": "05_call",
+      "start_s": 22,
+      "duration_s": 8,
+      "source_start_s": 0,
+      "source_clip": "05_call.mp4",
+      "caption": "Call the real site. Get structured data. HTTP 200 · 1 book · no model at runtime",
+      "crop": "1000:540:140:0"
+    },
+    {
+      "name": "06_export",
+      "start_s": 30,
+      "duration_s": 5,
+      "source_start_s": 0,
+      "source_clip": "06_export.mp4",
+      "caption": "Compile once. Reuse anywhere. MCP · OpenAPI · llms.txt",
+      "crop": "960:430:160:175"
+    }
+  ],
   "ffprobe": {
     "streams": [
       {
@@ -116,22 +114,22 @@
         "level": 31,
         "color_range": "tv",
         "color_space": "bt470bg",
-        "chroma_location": "center",
+        "chroma_location": "left",
         "field_order": "progressive",
         "is_avc": "true",
         "nal_length_size": "4",
         "id": "0x1",
         "r_frame_rate": "30/1",
-        "avg_frame_rate": "539/18",
+        "avg_frame_rate": "30/1",
         "time_base": "1/15360",
-        "start_pts": 707,
-        "start_time": "0.046029",
-        "duration_ts": 829440,
-        "duration": "54.000000",
-        "bit_rate": "312896",
+        "start_pts": 0,
+        "start_time": "0.000000",
+        "duration_ts": 537600,
+        "duration": "35.000000",
+        "bit_rate": "323650",
         "bits_per_raw_sample": "8",
-        "nb_frames": "1617",
-        "extradata_size": 51,
+        "nb_frames": "1050",
+        "extradata_size": 49,
         "disposition": {
           "default": 1,
           "dub": 0,
@@ -154,7 +152,7 @@
           "multilayer": 0
         },
         "tags": {
-          "language": "eng",
+          "language": "und",
           "handler_name": "VideoHandler",
           "encoder": "Lavc62.28.102 libx264"
         }
@@ -169,21 +167,21 @@
         "codec_tag": "0x6134706d",
         "mime_codec_string": "mp4a.40.2",
         "sample_fmt": "fltp",
-        "sample_rate": "22050",
-        "channels": 1,
-        "channel_layout": "mono",
+        "sample_rate": "44100",
+        "channels": 2,
+        "channel_layout": "stereo",
         "bits_per_sample": 0,
         "initial_padding": 0,
         "id": "0x2",
         "r_frame_rate": "0/0",
         "avg_frame_rate": "0/0",
-        "time_base": "1/22050",
+        "time_base": "1/44100",
         "start_pts": 0,
         "start_time": "0.000000",
-        "duration_ts": 1191724,
-        "duration": "54.046440",
-        "bit_rate": "61307",
-        "nb_frames": "1172",
+        "duration_ts": 1543500,
+        "duration": "35.000000",
+        "bit_rate": "162980",
+        "nb_frames": "1509",
         "extradata_size": 5,
         "disposition": {
           "default": 1,
@@ -220,9 +218,9 @@
       "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
       "format_long_name": "QuickTime / MOV",
       "start_time": "0.000000",
-      "duration": "54.046440",
-      "size": "2572029",
-      "bit_rate": "380713",
+      "duration": "35.000000",
+      "size": "2168719",
+      "bit_rate": "495707",
       "probe_score": 100,
       "tags": {
         "major_brand": "isom",
@@ -231,5 +229,6 @@
         "encoder": "Lavf62.12.102"
       }
     }
-  }
+  },
+  "full_decode_verified": true
 }

@@ -1,25 +1,15 @@
-# Shim × BeFreed: 54-second demo
+# Shim × BeFreed: 35-second demo
 
-1. 01_problem(8 seconds)
+Music and English captions. No voice-over.
 
-Websites are built for people. Agents need reusable tools, with clear inputs, that they can call directly.
+00–05s: Websites are built for people. Give agents reusable tools.
 
-2. 02_website(8 seconds)
+05–10s: Open a book. Read its details. BeFreed public website · actual browser navigation
 
-Here is BeFreed's public book page. A person opens a book and reads its title, author, and categories.
+10–16s: Discover. Verify. Then call. Real compile replay · waiting compressed
 
-3. 03_incremental(9 seconds)
+16–22s: One input: the book slug. Request and extraction rules are saved.
 
-Shim discovers tools, then verifies them before allowing calls. This real compilation replay compresses the waiting time.
+22–30s: Call the real site. Get structured data. HTTP 200 · 1 book · no model at runtime
 
-4. 04_schema(9 seconds)
-
-Load the saved compilation. Book details become a reusable tool, with a typed slug input and saved extraction rules.
-
-5. 05_call(12 seconds)
-
-Now call the live website. The response is HTTP two hundred, with structured book data. Repeated calls use HTTP directly, without another model invocation.
-
-6. 06_export(8 seconds)
-
-Compile once. Export OpenAPI and website documentation, and serve the verified tools through MCP.
+30–35s: Compile once. Reuse anywhere. MCP · OpenAPI · llms.txt

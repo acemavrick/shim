@@ -1,22 +1,32 @@
 # Shim × BeFreed 演示
 
-[观看 MP4](shim-befreed-demo.mp4) · [英文讲稿](script-en.md) · [英文字幕](shim-befreed-demo.en.srt) · [中文参考稿](script-zh.md) · [实测证据](metadata.json)
+[观看 MP4](shim-befreed-demo.mp4) · [英文分镜与字幕](script-en.md) · [SRT 字幕](shim-befreed-demo.en.srt) · [实测证据](metadata.json)
 
-成片约 **54 秒**，1280×720，H.264 + AAC；有英文旁白（macOS Samantha，en-US）和画面内英文说明。可直接用浏览器、QuickTime 或常见播放器播放。
+成片 **35 秒**，1280×720，H.264 + AAC。使用原创轻音乐和简短英文画面字幕，**没有旁白**。可直接用浏览器、QuickTime 或常见播放器播放。
 
 顺序：
 
-1. BeFreed 真实首页：网站为人类浏览设计，agent 需要可复用工具接口。
-2. 真实公开书籍页 Attached：标题、作者、分类。
-3. 边探索边出现候选、验证状态：**真实编译记录回放，已压缩等待**（画面明确标记 Real compilation replay）。
-4. 加载实际完成的 saved compilation，查看 `get_book(slug)` 输入与请求/提取规则。
-5. 点击 Call，真实请求当前 BeFreed：HTTP 200，1 条结构化书籍记录。
-6. 查看保存的产物：OpenAPI、llms.txt 等；同一 manifest 可以通过 `shim serve www.befreed.ai` 暴露为 MCP tools。
+| 时间 | 画面与信息 |
+|---|---|
+| 0–5 秒 | BeFreed 真实首页：给 agent 可复用工具 |
+| 5–10 秒 | 真实公开书籍页 Attached：标题、作者、分类 |
+| 10–16 秒 | 候选 → 验证 → 可调用；明确标记真实编译回放、压缩等待 |
+| 16–22 秒 | 保存的 `get_book(slug)`，放大输入 schema 与提取规则 |
+| 22–30 秒 | 原现场点击 Call 的录屏；真实 HTTP 200、1 条结构化书籍记录 |
+| 30–35 秒 | 保存的 OpenAPI、llms.txt 等产物；同一 manifest 可通过 MCP 暴露工具 |
 
-## 真实性和复现
+## 真实性
 
-第三段使用 `/tmp/shim-streaming-live.jsonl` 中真实编译事件，在当前 UI 重放，并在画面/旁白明确标注。事件副本保存在 `compile-events.jsonl`。此段没有新模型请求；其他浏览和工具调用是实际访问。保存结果的时间戳、输入、现场调用响应和 ffprobe 时长证据见 `metadata.json`。候选状态从未被当作已验证工具展示。
+使用既有真实浏览器录屏重剪，不重新访问网站或调用模型。增量编译段使用真实事件，画面明确标记 **Real compile replay · waiting compressed**。事件副本在 `compile-events.jsonl`。只有验证成功的工具显示为 Verified；没有把候选当作已通过验证。
 
-本演示表达的是“把人类浏览流程转换为 agent 可调用的工具接口”。没有声称 BeFreed 没有 API，也没有访问付费、登录或个人内容。现场调用不使用模型。
+工具调用是在原录制时实际发起的 `get_book(slug="attached-by-amir-levine")`：HTTP 200、1 条记录、标题 Attached，耗时 0.255 秒。输入、响应、保存结果时间戳和成片 ffprobe 证据见 `metadata.json`。本次剪辑不产生新的网络或模型请求。
 
-复现脚本：`scripts/record_demo.py`，依赖项目 Playwright、系统 ffmpeg 和 macOS `say` 的 Samantha 英文语音。优先读取仓库中的 `reports/demo/compile-events.jsonl`，缺失时才使用 `/tmp/shim-streaming-live.jsonl`。需要本地现有的 `sites/www.befreed.ai/manifest.json` 及运行中的 Shim UI；如果没有 saved manifest，先实际编译 BeFreed。录制脚本使用保存结果与捕获事件，不跑新编译。可设置 `SHIM_DEMO_SCENE=05_call` 单独重录现场调用片段。`raw/` 是原始无旁白 WebM；编号 MP4 是分镜。完整片为 `shim-befreed-demo.mp4`。
+没有声称 BeFreed 没有 API，也没有访问付费、登录或个人内容。现场工具调用仅发 HTTP 请求，不运行模型。
+
+## 音乐和复现
+
+音乐由 `scripts/generate_demo_music.py` 用 Python 标准库原创生成，无外部 samples；已保存小体积 master `demo-music.m4a`。最终视频只映射画面和音乐，源片中的系统语音被全部丢弃。
+
+运行 `.venv/bin/python scripts/record_demo.py` 可重剪。脚本依赖项目 Playwright（仅在本地生成字幕图片）、系统 ffmpeg 和 ffprobe，优先读取 music master；缺失时运行生成器并调整响度。也可通过 `--music PATH` 指定音乐。需要本地已有的六个原始录屏片段 `reports/demo/01_problem.mp4` 至 `06_export.mp4`；这些中间文件未提交仓库，因此仅克隆仓库不能重新剪辑。仓库保存了可直接播放的最终视频、字幕、音乐、脚本及真实编译事件。
+
+原始录屏、分镜 PNG 和 AIFF 是中间素材，不属于当前成片。`script-zh.md` 是此前版本的中文参考稿；当前成片以 `script-en.md` 和英文 SRT 为准。

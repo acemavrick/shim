@@ -335,11 +335,13 @@
   },
   "demo_video": {
     "path": "reports/demo/shim-befreed-demo.mp4",
-    "duration_s": 54.04644,
-    "narration_language": "English (en-US, Samantha)",
+    "duration_s": 35,
+    "narration": false,
     "captions_language": "English",
+    "music": "Original light instrumental soundtrack, master and renderer included",
+    "audio_matches_music_master_cosine": 0.999818,
     "incremental_segment": "Captured real compile events replayed with waits compressed and explicitly labelled",
-    "live_call": {
+    "live_call_recorded": {
       "status": 200,
       "records": 1,
       "elapsed_s": 0.255
