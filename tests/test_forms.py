@@ -58,3 +58,16 @@ def test_signature_is_stable_across_pages():
 
 def test_flags_multipart_enctype():
     assert FORMS[2].enctype == "multipart/form-data"
+
+
+def test_dedupe_names_reserves_existing_suffixes():
+    from shim.manifest import Action, Extract, HttpBackend, InputSchema
+    from shim.translate.from_form import dedupe_actions
+    original_names = ['search', 'search', 'search_1', 'search_2']
+    actions = [Action(name=name, description='Read', tier='read', input=InputSchema(),
+                      extract=Extract(fields={}), backend=HttpBackend(method='GET', url=f'https://site.test/{index}'))
+               for index, name in enumerate(original_names)]
+    kept, skips = dedupe_actions(actions)
+    assert not skips and len(kept) == len(actions)
+    assert len({action.name for action in kept}) == len(kept)
+    assert kept[2].name == 'search_1' and kept[3].name == 'search_2'

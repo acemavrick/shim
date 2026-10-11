@@ -11,6 +11,7 @@ find out. No ``passed``, no tool.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections import Counter
@@ -18,8 +19,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .manifest import Action, CheckResult, Extract, Skip
-from .runtime.extract import run_extract
-from .runtime.http import send_http
+from .runtime.extract import ExtractResult, run_extract
+from .runtime.http import RawResponse, send_http
 
 
 async def _send(action, args):
@@ -174,6 +175,43 @@ def _fingerprint(records: list[dict[str, Any]]) -> str:
     return json.dumps(records, sort_keys=True, ensure_ascii=False, default=str)
 
 
+def _verified_observed_extract(
+    action: Action, primary: RawResponse, control: RawResponse | None,
+) -> tuple[Extract, ExtractResult] | None:
+    """Reuse the explorer's proposal after testing fresh read responses.
+
+    Exploration already paid for a model to name and describe this capability.
+    A fresh pair of distinct probes can verify its extractor without asking the
+    model to propose the same interface again. Constant or empty extractions
+    still need the normal describer path, as do writes and single-example tools.
+    Static GET tools with no inputs need only a nonempty primary extraction,
+    matching the ordinary check gate for capabilities that cannot vary input.
+    """
+    if (action.tier != "read" or action.source is None
+            or action.source.submit != "agent-observed"):
+        return None
+    static = action.backend.kind == "http" and action.backend.method == "GET" and not action.input.properties
+    if control is None and not static:
+        return None
+    spec = action.extract
+    extracted = run_extract(primary.body, spec, primary.url)
+    if spec.kind == "css":
+        pruned = prune_empty_fields(spec, extracted.records)
+        if pruned.fields != spec.fields:
+            spec = pruned
+            extracted = run_extract(primary.body, spec, primary.url)
+    if not any(any(v not in (None, "", []) for v in r.values()) for r in extracted.records):
+        return None
+    if static:
+        return spec, extracted
+    control_records = run_extract(control.body, spec, primary.url).records
+    if not any(any(v not in (None, "", []) for v in r.values()) for r in control_records):
+        return None
+    if _fingerprint(extracted.records) == _fingerprint(control_records):
+        return None
+    return spec, extracted
+
+
 async def _probe_once(
     action: Action, args: dict[str, Any]
 ) -> tuple[Any, list[dict[str, Any]]] | None:
@@ -188,6 +226,33 @@ async def _probe_once(
         if any(v not in (None, "", []) for v in r.values())
     ]
     return res, non_empty
+
+
+def _independent_read(action: Action) -> bool:
+    return (action.tier == "read" and action.backend.kind == "http"
+            and action.backend.method == "GET" and not action.backend.refetch_from
+            and not (action.session and (action.session.carry_cookies or action.session.scope != "none"))
+            and not any(f.from_ in {"page", "generate"} for f in action.backend.fields.values()))
+
+
+async def _probe_pair(
+    action: Action, args: dict[str, Any], control_args: dict[str, Any],
+) -> tuple[RawResponse | Exception, RawResponse | Exception | None]:
+    """Overlap independent reads, retaining primary error precedence and cleanup."""
+    async def capture(inputs: dict[str, Any]) -> RawResponse | Exception:
+        try:
+            return await send_http(action.backend, inputs)
+        except Exception as exc:
+            return exc
+
+    async with asyncio.TaskGroup() as group:
+        primary_task = group.create_task(capture(args))
+        control_task = group.create_task(capture(control_args))
+        primary = await primary_task
+        if isinstance(primary, Exception) or primary.blocked or primary.status >= 400:
+            control_task.cancel()
+    control = None if control_task.cancelled() else control_task.result()
+    return primary, control
 
 
 async def check_action(
@@ -222,11 +287,30 @@ async def check_action(
     varies = has_free_text(action)
     last_error: str | None = None
     control_term = ""
+    attempted_inputs: set[str] = set()
 
     for probe in terms:
         args = sample_args(action, probe)
+        # Example-bound and static tools can produce identical arguments for
+        # every crawl word. Repeating their request/proposal cannot test a new
+        # input; keep trying only when the actual primary arguments change.
+        signature = _fingerprint([args])
+        if signature in attempted_inputs:
+            continue
+        attempted_inputs.add(signature)
+        control_args = {}
+        if varies and action.tier == "read":
+            control_term = next((t for t in terms if t != probe), f"{probe}qx")
+            control_args = sample_args(action, control_term, variant=1)
+        parallel = bool(control_args != args and varies and _independent_read(action))
+        paired_control = None
         try:
-            primary = await _send(action, args)
+            if parallel:
+                primary, paired_control = await _probe_pair(action, args, control_args)
+                if isinstance(primary, Exception):
+                    raise primary
+            else:
+                primary = await _send(action, args)
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
             continue
@@ -244,18 +328,21 @@ async def check_action(
             last_error = f"HTTP {primary.status}"
             continue
 
+        control = None
         control_body = None
         control_status = None
-        control_args = {}
         if varies and action.tier == "read":
-            control_term = next((t for t in terms if t != probe), f"{probe}qx")
-            control_args = sample_args(action, control_term, variant=1)
             if control_args == args:
                 last_error = "no distinct control input available; parameterized tool is unverified"
                 continue
             if control_args != args:
                 try:
-                    control = await _send(action, control_args)
+                    if parallel:
+                        if isinstance(paired_control, Exception):
+                            raise paired_control
+                        control = paired_control
+                    else:
+                        control = await _send(action, control_args)
                 except Exception as exc:
                     last_error = f"control probe failed: {type(exc).__name__}: {exc}"
                     continue
@@ -265,9 +352,15 @@ async def check_action(
                 control_body = control.body
                 control_status = control.status
 
+        # The explorer's write-down is already a model proposal. Verify it
+        # against both fresh responses before paying for a second proposal.
+        reused = _verified_observed_extract(action, primary, control)
+        extracted = None
+        if reused is not None:
+            action.extract, extracted = reused
         # Model output is the primary translation path. Heuristics are used
         # only when no model is configured, not to rescue invalid proposals.
-        if describer is not None:
+        elif describer is not None:
             proposal = await describer(action, primary.body, control_body, args, control_args)
             if proposal is None:
                 last_error = "model proposal failed; candidate not verified"
@@ -320,7 +413,8 @@ async def check_action(
             action.extract = infer_listing(primary.body)
             control_body = None
 
-        extracted = run_extract(primary.body, action.extract, primary.url)
+        if extracted is None:
+            extracted = run_extract(primary.body, action.extract, primary.url)
 
         # Drop fields the real response does not fill, then re-extract so the
         # recorded count reflects the shipped spec.

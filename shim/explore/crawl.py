@@ -8,6 +8,7 @@ DOM) that this scope disclaims. ``BrowserExplorer`` adds that behind a flag.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from urllib.parse import urldefrag, urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
@@ -82,71 +83,105 @@ async def crawl(
     start_url: str,
     max_pages: int = 12,
     on_page: "callable | None" = None,
+    concurrency: int | None = None,
 ) -> CrawlResult:
-    """Breadth-first, same-site, serial, robots-aware."""
+    """Breadth-first, bounded parallel downloads, ordered results, robots-aware."""
+    from ..config import config
+    cfg = config()
+    concurrency = cfg.crawl_concurrency if concurrency is None else concurrency
+    if not 1 <= concurrency <= 16:
+        raise ValueError("concurrency must be between 1 and 16")
     parts = urlsplit(start_url)
     host = parts.netloc
     origin = f"{parts.scheme}://{host}"
 
     result = CrawlResult()
-    robots = await _load_robots(origin)
+    robots = await _load_robots(origin) if cfg.respect_robots else None
 
-    queue: list[str] = [urldefrag(start_url)[0]]
+    queue = deque([urldefrag(start_url)[0]])
     seen: set[str] = set(queue)
     signatures: set[str] = set()
 
-    while queue and len(result.pages) < max_pages:
-        url = queue.pop(0)
+    pending: deque[tuple[str, asyncio.Task]] = deque()
+    blocked = False
 
-        if robots and not robots.can_fetch(USER_AGENT, url):
-            result.skips.append(Skip(what=url, reason="robots-disallowed"))
-            continue
-
+    async def fetch(url):
+        nonlocal blocked
         try:
             res = await fetch_page(url)
+            # Observe protection as soon as any download finishes, even if an
+            # earlier BFS response is still pending. Never refill after that.
+            if res.blocked:
+                blocked = True
+                current = asyncio.current_task()
+                cutoff = next((index for index, (_, task) in enumerate(pending)
+                               if task is current), -1)
+                # Keep preceding BFS results, but cancel every later request
+                # now, including requests still waiting on HTTP pacing.
+                for _, task in list(pending)[cutoff + 1:]:
+                    task.cancel()
+            return res
         except Exception as exc:
-            result.pages_failed += 1
-            result.skips.append(
-                Skip(what=url, reason="fetch-error", detail=type(exc).__name__)
-            )
-            continue
+            return exc
 
-        if res.blocked:
-            result.blocked = True
-            result.skips.append(
-                Skip(what=url, reason="bot-protection", detail=f"HTTP {res.status}")
-            )
-            # A defended site will not yield to retries; stop politely.
-            break
+    try:
+        while queue or pending:
+            # Each pending request reserves one successful-page slot. This keeps
+            # max_pages exact without speculative downloads beyond the budget.
+            while (queue and not blocked and len(pending) < concurrency
+                   and len(result.pages) + len(pending) < max_pages):
+                url = queue.popleft()
+                if robots and not robots.can_fetch(cfg.user_agent, url):
+                    result.skips.append(Skip(what=url, reason="robots-disallowed"))
+                    continue
+                pending.append((url, asyncio.create_task(fetch(url))))
+            if not pending:
+                break
 
-        if res.status >= 400 or "html" not in res.content_type:
-            result.pages_failed += 1
-            continue
-
-        soup = BeautifulSoup(res.body, "lxml")
-        title_tag = soup.select_one("title")
-        page = CrawledPage(
-            url=res.url,
-            html=res.body,
-            title=title_tag.get_text(strip=True) if title_tag else None,
-        )
-        result.pages.append(page)
-
-        for descriptor in parse_forms(res.body, res.url):
-            # A site-wide header form appears on every page; keep the first.
-            if descriptor.signature in signatures:
+            # Consume in discovery order, but refill immediately after each page
+            # instead of waiting for the slowest request in a whole batch.
+            url, task = pending.popleft()
+            res = await task
+            if isinstance(res, Exception):
+                result.pages_failed += 1
+                result.skips.append(Skip(what=url, reason="fetch-error", detail=type(res).__name__))
                 continue
-            signatures.add(descriptor.signature)
-            result.forms.append(descriptor)
+            if res.blocked:
+                result.blocked = True
+                result.skips.append(Skip(what=url, reason="bot-protection", detail=f"HTTP {res.status}"))
+                # Other bounded requests may be in flight; cancel them below.
+                return result
+            if res.status >= 400 or "html" not in res.content_type:
+                result.pages_failed += 1
+                continue
 
-        if on_page:
-            maybe = on_page(page, result)
-            if asyncio.iscoroutine(maybe):
-                await maybe
+            soup = BeautifulSoup(res.body, "lxml")
+            title_tag = soup.select_one("title")
+            page = CrawledPage(url=res.url, html=res.body,
+                               title=title_tag.get_text(strip=True) if title_tag else None)
+            result.pages.append(page)
 
-        for link in _links(res.body, res.url, host):
-            if link not in seen and len(seen) < max_pages * 6:
-                seen.add(link)
-                queue.append(link)
+            for descriptor in parse_forms(res.body, res.url):
+                # A site-wide header form appears on every page; keep the first.
+                if descriptor.signature in signatures:
+                    continue
+                signatures.add(descriptor.signature)
+                result.forms.append(descriptor)
+
+            if on_page:
+                maybe = on_page(page, result)
+                if asyncio.iscoroutine(maybe):
+                    await maybe
+
+            for link in _links(res.body, res.url, host):
+                if link not in seen and len(seen) < max_pages * 6:
+                    seen.add(link)
+                    queue.append(link)
+
+    finally:
+        for _, task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*(task for _, task in pending), return_exceptions=True)
 
     return result

@@ -8,13 +8,15 @@ Every shipped request passes the same runtime verification gate.
 from __future__ import annotations
 
 import json
+import asyncio
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from time import perf_counter
 from urllib.parse import urlsplit
 
-from .check import check_action, probe_terms
+from .check import check_action, probe_terms, sample_args
 from .explore.crawl import crawl
 from .manifest import Coverage, Manifest, Page, Skip
 from .translate.from_form import dedupe_actions, form_to_actions
@@ -55,7 +57,62 @@ async def _emit(emit: Emit, event: dict[str, Any]) -> None:
         await result
 
 
-async def compile_site(
+def _independent(action):
+    return (action.tier == "read" and action.backend.kind == "http"
+            and action.backend.method == "GET" and not action.backend.refetch_from
+            and not (action.session and (action.session.carry_cookies or action.session.scope != "none"))
+            and not any(f.from_ in {"page", "generate"} for f in action.backend.fields.values()))
+
+
+async def _checked_actions(actions, probes, *, allow_writes, describer, concurrency,
+                           check=None):
+    """Continuously refill independent checks, draining before stateful barriers.
+
+    Work completes in any order; results retain candidate order for stable names.
+    """
+    check = check or (lambda action: check_action(action, probes, allow_writes=allow_writes,
+                                                  describer=describer))
+    slots = asyncio.Semaphore(concurrency)
+    async def bounded(action):
+        async with slots:
+            return await check(action)
+    async with asyncio.TaskGroup() as group:
+        index = 0
+        while index < len(actions):
+            if not _independent(actions[index]):
+                action = actions[index]
+                index += 1
+                name = action.name
+                checked, skip = await check(action)
+                yield name, checked, skip
+                continue
+            pending = []
+            while index < len(actions) and _independent(actions[index]):
+                action = actions[index]
+                pending.append((action.name, group.create_task(bounded(action))))
+                index += 1
+            for name, task in pending:
+                checked, skip = await task
+                yield name, checked, skip
+
+
+async def compile_site(url: str, max_pages: int = 12, allow_writes: bool = False,
+                       include_pages: bool = False, use_browser: bool = False,
+                       intent: str | None = None, agent: bool | None = None,
+                       emit: Emit = None) -> Manifest:
+    # Validate outside TaskGroup to preserve the public error types.
+    from .config import config
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+        raise ValueError(f"not a URL: {url!r}")
+    if agent is True and not config().has_model:
+        raise ValueError("browser exploration requires an Anthropic API key or a configured Codex CLI provider")
+    async with asyncio.TaskGroup() as group:
+        return await _compile_site(url, max_pages, allow_writes, include_pages, use_browser,
+                                   intent, agent, emit, _group=group)
+
+
+async def _compile_site(
     url: str,
     max_pages: int = 12,
     allow_writes: bool = False,
@@ -64,7 +121,45 @@ async def compile_site(
     intent: str | None = None,
     agent: bool | None = None,
     emit: Emit = None,
+    _group=None,
 ) -> Manifest:
+    started = perf_counter()
+    phase = None
+    phase_starts = {}
+    timings = {}
+    active_stages = set()
+    destination = emit
+
+    async def finish_phase(stage):
+        if stage in phase_starts:
+            timings[stage] = round((perf_counter() - phase_starts.pop(stage)) * 1000)
+            active_stages.discard(stage)
+            await _emit(destination, {"type": "timing", "stage": stage,
+                                      "elapsed_ms": timings[stage]})
+
+    async def timed_emit(event):
+        nonlocal phase
+        kind = event.get("type")
+        if kind == "stage":
+            stage = event["stage"]
+            if stage not in {"agent", "explore"}:
+                if phase is not None:
+                    await finish_phase(phase)
+                phase = stage
+            phase_starts[stage] = perf_counter()
+            active_stages.add(stage)
+        elif kind == "stage_end":
+            await finish_phase(event["stage"])
+        elif kind == "done":
+            for stage in list(phase_starts):
+                await finish_phase(stage)
+            event = {**event, "elapsed_ms": round((perf_counter() - started) * 1000),
+                     "timings_ms": timings}
+        if kind in {"stage", "stage_end"}:
+            event = {**event, "active_stages": sorted(active_stages)}
+        await _emit(destination, event)
+
+    emit = timed_emit
     from .config import config as _config
     cfg = _config()
     parts = urlsplit(url)
@@ -72,7 +167,7 @@ async def compile_site(
     if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
         raise ValueError(f"not a URL: {url!r}")
     if agent is True and not cfg.has_model:
-        raise ValueError("browser exploration requires an Anthropic API key")
+        raise ValueError("browser exploration requires an Anthropic API key or a configured Codex CLI provider")
     agent = cfg.has_model and not use_browser if agent is None else agent
     if agent and not intent:
         intent = "Learn this site's representative capabilities and compile a reusable agent-readable interface."
@@ -83,15 +178,122 @@ async def compile_site(
     coverage = Coverage()
     await _emit(emit, {"type": "stage", "stage": "explore", "url": url})
 
-    async def on_page(page: Any, _result: Any) -> None:
+    from .translate.describe import make_completer, ModelDescriber
+    from .translate.from_links import collect_links, link_actions
+    page_html = {}
+    early_describer = (ModelDescriber(make_completer(cfg, on_event=emit), page_html=page_html,
+                                      intent=intent) if cfg.has_model else None)
+    slots = asyncio.Semaphore(cfg.check_concurrency)
+    candidates = {}
+    early_checks = {}
+    form_signatures = set()
+    early_barrier = allow_writes
+    seen_links = set()
+
+    def key(action):
+        backend = action.backend
+        if backend.kind != "http":
+            return (backend.kind, backend.model_dump_json(), ())
+        return (backend.method, backend.url.split("#")[0], tuple(sorted(backend.fields)))
+
+    def payload(action, candidate_id):
+        return {"candidate_id": candidate_id, "name": action.name,
+                "description": action.description, "tier": action.tier,
+                "inputs": list(action.input.properties),
+                "schema": action.input.model_dump(exclude_none=True),
+                "required": action.input.required,
+                "definition": action.model_dump(by_alias=True, exclude_none=True)}
+
+    async def announce(action):
+        request_key = key(action)
+        if request_key not in candidates:
+            candidates[request_key] = f"tool-{len(candidates) + 1}"
+            await _emit(emit, {"type": "tool_candidate", **payload(action, candidates[request_key])})
+        return candidates[request_key]
+
+    async def verify(action, probes, describer):
+        candidate_id = await announce(action)
+        async with slots:
+            await _emit(emit, {"type": "tool_checking", **payload(action, candidate_id)})
+            checked, skip = await check_action(action, probes, allow_writes=allow_writes,
+                                                describer=describer)
+            if skip is None:
+                await _emit(emit, {"type": "action", **payload(checked, candidate_id),
+                                  "items_found": checked.check.items_found if checked.check else None})
+            else:
+                await _emit(emit, {"type": "action_failed", **payload(checked, candidate_id),
+                                  "error": checked.check.error if checked.check else skip.detail})
+            return checked, skip
+
+    async def on_page(page: Any, result: Any) -> None:
+        nonlocal early_barrier
         coverage.pages_crawled += 1
+        page_html[page.url] = page.html
         await _emit(emit, {"type": "page", "url": page.url, "title": page.title})
+        probes = probe_terms(list(page_html.values()))
+        for descriptor in getattr(result, "forms", []):
+            if descriptor.signature in form_signatures:
+                continue
+            form_signatures.add(descriptor.signature)
+            produced, _ = form_to_actions(descriptor)
+            for action in produced:
+                await announce(action)
+                if not _independent(action):
+                    early_barrier = True
+                if not early_barrier and key(action) not in early_checks:
+                    early_checks[key(action)] = (list(probes), _group.create_task(
+                        verify(action.model_copy(deep=True), probes, early_describer)))
+        seen_links.update(collect_links([(page.url, page.html)], host))
+        # Link patterns are visible immediately. Their verification follows the
+        # agent proposals so richer observed evidence keeps its precedence.
+        for action in link_actions(sorted(seen_links)):
+            await announce(action)
+            if not agent and not early_barrier and key(action) not in early_checks:
+                early_checks[key(action)] = (list(probes), _group.create_task(
+                    verify(action.model_copy(deep=True), probes, early_describer)))
+
+    async def explore_agent():
+        from .explore.agent import AgentExplorer
+        await _emit(emit, {"type": "stage", "stage": "agent", "intent": intent})
+        async def agent_event(event):
+            if event.get("type") == "agent_tool":
+                from .manifest import Action
+                action = Action.model_validate(event["definition"])
+                await announce(action)
+                if _independent(action) and not early_barrier and key(action) not in early_checks:
+                    probes = probe_terms(list(page_html.values()))
+                    early_checks[key(action)] = (list(probes), _group.create_task(
+                        verify(action.model_copy(deep=True), probes, early_describer)))
+            else:
+                await _emit(emit, event)
+        async def checkpoint(result):
+            (run_dir / "raw" / "checkpoint.json").write_text(json.dumps({
+                "recipe": result.recipe, "observed": [o.__dict__ for o in result.observed],
+                "pages": [{"url": p.url, "title": p.title, "html": p.html} for p in result.pages],
+                "model_trace": result.model_trace, "errors": result.errors,
+                "site_description": result.site_description, "notes": result.notes}, indent=1))
+        explorer = AgentExplorer(make_completer(cfg, on_event=emit, max_tokens=8192), intent,
+                                 on_event=agent_event, step_budget=cfg.agent_steps,
+                                 allow_writes=allow_writes, on_checkpoint=checkpoint)
+        try:
+            return await explorer.run(url)
+        except Exception as exc:
+            skip = Skip(what="agent", reason="fetch-error", detail=f"{type(exc).__name__}: {exc}")
+            coverage.skipped.append(skip)
+            await _emit(emit, {"type": "skip", **skip.model_dump()})
+            return None
+        finally:
+            await _emit(emit, {"type": "stage_end", "stage": "agent"})
+
+    agent_task = (_group.create_task(explore_agent())
+                  if agent and intent and not allow_writes else None)
 
     if use_browser:
         from .explore.browser import browser_crawl
         crawled = await browser_crawl(url, max_pages=max_pages, on_page=on_page)
     else:
         crawled = await crawl(url, max_pages=max_pages, on_page=on_page)
+    await _emit(emit, {"type": "stage_end", "stage": "explore"})
     coverage.pages_crawled = len(crawled.pages)
     coverage.pages_failed = crawled.pages_failed
     coverage.forms_found = len(crawled.forms)
@@ -123,50 +325,37 @@ async def compile_site(
             if produced is not None:
                 actions.append(produced)
 
+    await _emit(emit, {"type": "stage_end", "stage": "translate"})
+
     # The agent explorer: a model drives the site toward the intent, and what
     # it observes becomes candidates like everything else. Its pages join the
     # crawl so their forms, links and declared records are read too.
     agent_result = None
-    if agent and intent:
-        from .config import config as _cfg
-        if _cfg().has_model:
-            from .explore.agent import AgentExplorer
-            from .translate.describe import AnthropicCompleter
-            await _emit(emit, {"type": "stage", "stage": "agent", "intent": intent})
-            async def checkpoint(result):
-                (run_dir / "raw" / "checkpoint.json").write_text(json.dumps({
-                    "recipe": result.recipe, "observed": [o.__dict__ for o in result.observed],
-                    "pages": [{"url": p.url, "title": p.title, "html": p.html} for p in result.pages],
-                    "model_trace": result.model_trace, "errors": result.errors,
-                    "site_description": result.site_description, "notes": result.notes}, indent=1))
-            explorer = AgentExplorer(AnthropicCompleter(_cfg(), on_event=emit, max_tokens=8192), intent, on_event=emit,
-                                     allow_writes=allow_writes, on_checkpoint=checkpoint)
-            try:
-                agent_result = await explorer.run(url)
-            except Exception as exc:
-                coverage.skipped.append(Skip(what="agent", reason="fetch-error",
-                                             detail=f"{type(exc).__name__}: {exc}"))
-            if agent_result is not None:
-                for error in agent_result.errors:
-                    coverage.skipped.append(Skip(what="agent-write-down", reason="check-failed", detail=error))
-                    await _emit(emit, {"type": "skip", "what": "agent-write-down", "reason": "check-failed", "detail": error})
-                # Prefer rendered evidence over the initial SPA shell at the same URL.
-                merged_pages = {p.url: p for p in crawled.pages}
-                merged_pages.update({p.url: p for p in agent_result.pages})
-                crawled.pages = list(merged_pages.values())
-                coverage.pages_crawled = len(crawled.pages)
-                await _emit(emit, {"type": "agent_done", "steps": agent_result.steps_taken,
-                                   "observed": len([o for o in agent_result.observed if o.interesting]),
-                                   "tools": [a.name for a in agent_result.tools],
-                                   "summary": agent_result.summary})
-                actions.extend(agent_result.tools)
-                raw_dir = run_dir / "raw"
-                raw_dir.mkdir(parents=True, exist_ok=True)
-                (raw_dir / "agent-trace.json").write_text(json.dumps({
-                    "intent": intent, "recipe": agent_result.recipe,
-                    "requests": [o.compact() for o in agent_result.observed if o.interesting],
-                    "summary": agent_result.summary, "model_trace": agent_result.model_trace,
-                    "errors": agent_result.errors}, indent=1))
+    if agent and intent and agent_task is None:
+        agent_task = _group.create_task(explore_agent())
+    if agent_task is not None:
+        agent_result = await agent_task
+        if agent_result is not None:
+            for error in agent_result.errors:
+                coverage.skipped.append(Skip(what="agent-write-down", reason="check-failed", detail=error))
+                await _emit(emit, {"type": "skip", "what": "agent-write-down", "reason": "check-failed", "detail": error})
+            # Prefer rendered evidence over the initial SPA shell at the same URL.
+            merged_pages = {p.url: p for p in crawled.pages}
+            merged_pages.update({p.url: p for p in agent_result.pages})
+            crawled.pages = list(merged_pages.values())
+            coverage.pages_crawled = len(crawled.pages)
+            await _emit(emit, {"type": "agent_done", "steps": agent_result.steps_taken,
+                               "observed": len([o for o in agent_result.observed if o.interesting]),
+                               "tools": [a.name for a in agent_result.tools],
+                               "summary": agent_result.summary})
+            actions.extend(agent_result.tools)
+            raw_dir = run_dir / "raw"
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            (raw_dir / "agent-trace.json").write_text(json.dumps({
+                "intent": intent, "recipe": agent_result.recipe,
+                "requests": [o.compact() for o in agent_result.observed if o.interesting],
+                "summary": agent_result.summary, "model_trace": agent_result.model_trace,
+                "errors": agent_result.errors}, indent=1))
 
     # Links with one varying segment are detail-page tools: /ebooks/1342 and
     # /ebooks/84 are one capability, get_ebook(id), not two pages.
@@ -180,45 +369,73 @@ async def compile_site(
     actions, dupe_skips = dedupe_actions(actions)
     coverage.skipped.extend(dupe_skips)
     coverage.actions_generated = len(actions)
+    final_keys = {key(action) for action in actions}
+    superseded = [task for request_key, (_, task) in early_checks.items()
+                  if request_key not in final_keys]
+    for task in superseded:
+        task.cancel()
+    if superseded:
+        await asyncio.gather(*superseded, return_exceptions=True)
+    for action in actions:
+        await announce(action)
 
     # -------------------------------------------------------------- check
     await _emit(emit, {"type": "stage", "stage": "check", "candidates": len(actions)})
 
     probes = probe_terms([p.html for p in crawled.pages])
 
-    describer = None
-    if cfg.has_model:
-        from .translate.describe import AnthropicCompleter, ModelDescriber
-        describer = ModelDescriber(AnthropicCompleter(cfg, on_event=emit),
-                                   page_html={p.url: p.html for p in crawled.pages},
-                                   intent=intent)
-        await _emit(emit, {"type": "stage", "stage": "describe", "model": cfg.model})
+    describer = early_describer
+    page_html.update({p.url: p.html for p in crawled.pages})
+    if describer is not None:
+        await _emit(emit, {"type": "stage", "stage": "describe", "model": cfg.model_name})
+
+    async def final_check(action):
+        if not _independent(action):
+            # Early link discovery may precede a form that becomes a barrier.
+            # Drain outer tasks too, not just this stage's ordered workers.
+            await asyncio.gather(*(task for request_key, (_, task) in early_checks.items()
+                                   if request_key in final_keys))
+        cached = early_checks.get(key(action))
+        if cached is not None:
+            early_probes, task = cached
+            checked, skip = await task
+            if skip is None:
+                return checked, skip
+            tried = {json.dumps(sample_args(action, term), sort_keys=True) for term in early_probes}
+            remaining = [term for term in probes
+                         if json.dumps(sample_args(action, term), sort_keys=True) not in tried]
+            if not remaining:
+                return checked, skip
+            return await verify(action, remaining, describer)
+        return await verify(action, probes, describer)
 
     shipped = []
     renamed: dict[str, str] = {}
-    used_names: dict[str, int] = {}
-    for action in actions:
-        original_name = action.name
-        checked, skip = await check_action(action, probes, allow_writes=allow_writes,
-                                           describer=describer)
-        if checked.name in used_names:
-            used_names[checked.name] += 1
-            checked.name = f"{checked.name}_{used_names[checked.name]}"
-        else:
-            used_names[checked.name] = 1
+    used_names: set[str] = set()
+    async for original_name, checked, skip in _checked_actions(
+            actions, probes, allow_writes=allow_writes, describer=describer,
+            concurrency=cfg.check_concurrency, check=final_check):
         if skip:
             coverage.skipped.append(skip)
             await _emit(emit, {
                 "type": "action_failed",
+                "candidate_id": candidates[key(checked)],
                 "name": checked.name,
                 "tier": checked.tier,
                 "error": checked.check.error if checked.check else None,
             })
             continue
+        base_name = checked.name
+        suffix = 1
+        while checked.name in used_names:
+            suffix += 1
+            checked.name = f"{base_name}_{suffix}"
+        used_names.add(checked.name)
         shipped.append(checked)
         renamed[original_name] = checked.name
         await _emit(emit, {
             "type": "action",
+            "candidate_id": candidates[key(checked)],
             "name": checked.name,
             "description": checked.description,
             "tier": checked.tier,
@@ -229,6 +446,11 @@ async def compile_site(
             "items_found": checked.check.items_found if checked.check else None,
         })
 
+    final_keys = {key(action) for action in actions}
+    for request_key, candidate_id in candidates.items():
+        if request_key not in final_keys:
+            await _emit(emit, {"type": "action_failed", "candidate_id": candidate_id,
+                              "error": "Candidate superseded by the final evidence."})
     coverage.actions_shipped = len(shipped)
     if describer is not None:
         await _emit(emit, {"type": "describe_done", "calls": describer.calls,

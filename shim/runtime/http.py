@@ -15,9 +15,10 @@ from dataclasses import dataclass
 from typing import Any
 import json
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
+from weakref import WeakKeyDictionary
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 
 from ..manifest import Action, HttpBackend
 from .extract import ExtractResult, run_extract
@@ -29,10 +30,15 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 USER_AGENT = "shim-compiler/0.1 (site-to-agent translation layer)"
 ACCEPT = "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
 
-# One request at a time, with a politeness gap. Applies to every fetch we make.
-MIN_GAP = 0.35
-_last_request_at = 0.0
-_lock = asyncio.Lock()
+# Space request starts per origin, while allowing downloads to overlap.
+# Loop-local locks also support successive asyncio.run() invocations.
+_pacers: WeakKeyDictionary = WeakKeyDictionary()
+
+
+@dataclass
+class _Pacer:
+    lock: asyncio.Lock
+    last_request_at: float = 0.0
 
 # Cookie jar. One process == one session under stdio.
 _client: httpx.AsyncClient | None = None
@@ -41,10 +47,11 @@ _client: httpx.AsyncClient | None = None
 def _get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
+        from ..config import config
         _client = httpx.AsyncClient(
             follow_redirects=True,
             timeout=httpx.Timeout(20.0),
-            headers={"user-agent": USER_AGENT, "accept": ACCEPT},
+            headers={"user-agent": config().user_agent, "accept": ACCEPT},
         )
     return _client
 
@@ -82,12 +89,17 @@ class RawResponse:
 
 
 async def _polite_fetch(method: str, url: str, **kwargs: Any) -> RawResponse:
-    global _last_request_at
-    async with _lock:
-        gap = time.monotonic() - _last_request_at
-        if gap < MIN_GAP:
-            await asyncio.sleep(MIN_GAP - gap)
-        _last_request_at = time.monotonic()
+    from ..config import config
+    parts = urlsplit(url)
+    origin = (parts.scheme.lower(), parts.hostname, parts.port or (443 if parts.scheme == "https" else 80))
+    pacers = _pacers.setdefault(asyncio.get_running_loop(), {})
+    pacer = pacers.setdefault(origin, _Pacer(asyncio.Lock()))
+    async with pacer.lock:
+        gap = time.monotonic() - pacer.last_request_at
+        minimum = config().min_request_gap
+        if gap < minimum:
+            await asyncio.sleep(minimum - gap)
+        pacer.last_request_at = time.monotonic()
 
     res = await _get_client().request(method, url, **kwargs)
     body = res.text
@@ -107,7 +119,9 @@ async def fetch_page(url: str) -> RawResponse:
 async def _refetch_hidden_fields(url: str) -> dict[str, str]:
     """Re-scrapes hidden fields so rotating tokens are current, not compile-time stale."""
     res = await _polite_fetch("GET", url)
-    soup = BeautifulSoup(res.body, "lxml")
+    # Only input attributes are used here; avoid building the entire document's
+    # tree on every rotating-token refresh.
+    soup = BeautifulSoup(res.body, "lxml", parse_only=SoupStrainer("input"))
     out: dict[str, str] = {}
     for el in soup.select("input[type=hidden][name]"):
         name = el.get("name")

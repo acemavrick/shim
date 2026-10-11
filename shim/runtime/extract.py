@@ -15,10 +15,12 @@ import warnings
 # never print at call time (stdio MCP keeps stdout for the protocol).
 warnings.filterwarnings("ignore", category=FutureWarning, module="soupsieve")
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
+import soupsieve
 
 from ..manifest import Extract
 
@@ -33,13 +35,14 @@ class ExtractResult:
     items_found: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class FieldSpec:
     selector: str
     attr: str | None = None
     cast: str | None = None
 
 
+@lru_cache(maxsize=512)
 def parse_field_spec(spec: str) -> FieldSpec:
     s = spec
     cast = None
@@ -89,9 +92,20 @@ def _read(node: Tag, f: FieldSpec) -> str | None:
     return node.get_text()
 
 
+@lru_cache(maxsize=512)
+def _css_selector(selector: str) -> soupsieve.SoupSieve | None:
+    # Compile once for every response/record using this selector. Invalid stored
+    # selectors keep their existing missing-value behavior.
+    try:
+        return soupsieve.compile(selector)
+    except Exception:
+        return None
+
+
 def extract_from_html(html: str, spec: Extract, base_url: str | None = None) -> ExtractResult:
     soup = BeautifulSoup(html, "lxml")
     specs = {k: parse_field_spec(v) for k, v in spec.fields.items()}
+    selectors = {f.selector: _css_selector(f.selector) for f in specs.values() if f.selector}
 
     # No `items` selector means the whole document is one record.
     try:
@@ -102,26 +116,38 @@ def extract_from_html(html: str, spec: Extract, base_url: str | None = None) -> 
     records: list[dict[str, Any]] = []
     for root in roots:
         rec: dict[str, Any] = {}
+        scope = root if root is not None else soup
+        nodes: dict[str, Tag | None] = {}
         for key, f in specs.items():
-            scope = root if root is not None else soup
-            if f.selector == "":
-                node = scope if isinstance(scope, Tag) else None
+            if f.selector in nodes:
+                node = nodes[f.selector]
             else:
-                try:
-                    node = scope.select_one(f.selector)
-                except Exception:
+                if f.selector == "":
+                    node = scope if isinstance(scope, Tag) else None
+                elif selectors[f.selector] is None:
                     node = None
+                else:
+                    try:
+                        node = selectors[f.selector].select_one(scope)
+                    except Exception:
+                        node = None
+                nodes[f.selector] = node
             rec[key] = _finish(_read(node, f), f, base_url) if node is not None else None
         records.append(rec)
 
     return ExtractResult(records=records, items_found=len(records))
 
 
-def _at_path(root: Any, path: str) -> Any:
-    if path == "":
+@lru_cache(maxsize=512)
+def _path_segments(path: str) -> tuple[str, ...]:
+    return tuple(path.split(".")) if path else ()
+
+
+def _at_segments(root: Any, segments: tuple[str, ...]) -> Any:
+    if not segments:
         return root
     cur = root
-    for seg in path.split("."):
+    for seg in segments:
         if cur is None:
             return None
         if isinstance(cur, list):
@@ -136,17 +162,24 @@ def _at_path(root: Any, path: str) -> Any:
     return cur
 
 
+def _at_path(root: Any, path: str) -> Any:
+    return _at_segments(root, _path_segments(path))
+
+
 def extract_from_json(body: Any, spec: Extract) -> ExtractResult:
     target = _at_path(body, spec.items) if spec.items else body
     items = target if isinstance(target, list) else [target]
+    specs = []
+    for key, raw in spec.fields.items():
+        field = parse_field_spec(raw)
+        specs.append((key, _path_segments(field.selector), field.cast))
 
     records: list[dict[str, Any]] = []
     for item in items:
         rec: dict[str, Any] = {}
-        for key, raw in spec.fields.items():
-            f = parse_field_spec(raw)
-            value = _at_path(item, f.selector)
-            if f.cast == "number" and isinstance(value, str):
+        for key, segments, cast in specs:
+            value = _at_segments(item, segments)
+            if cast == "number" and isinstance(value, str):
                 value = to_number(value)
             rec[key] = value
         records.append(rec)

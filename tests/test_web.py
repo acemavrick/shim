@@ -58,6 +58,9 @@ def test_compile_automatically_explores_with_intent_and_key(monkeypatch):
     monkeypatch.setattr(web, "compile_site", compile_site)
     response = request("GET", "/api/compile", params={"url": "https://books.test", "intent": "Find a book"})
     event = json.loads(response.text.removeprefix("data: ").strip())
+    assert event.pop("host") == "books.test"
+    assert len(event.pop("run_id")) == 32
+    assert len(event.pop("live_id")) == 32
     assert event == {"type": "done", "agent": True, "writes": False}
 
 

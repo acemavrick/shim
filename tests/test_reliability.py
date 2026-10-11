@@ -163,7 +163,6 @@ def test_read_post_does_not_follow_redirects(monkeypatch):
         return httpx.Response(307, headers={"location": "https://evil.test/delete"})
     client = httpx.AsyncClient(transport=httpx.MockTransport(transport), follow_redirects=True)
     monkeypatch.setattr(http, "_get_client", lambda: client)
-    monkeypatch.setattr(http, "MIN_GAP", 0)
     import shim.config as cfg
     monkeypatch.setattr(cfg, "config", lambda: Config(read_post_rules=[ReadPostRule(url="https://x.test/approved", body={})]))
     action = Action(name="list_items", description="List", tier="read", input=InputSchema(),
@@ -188,3 +187,26 @@ def test_malformed_placeholder_is_isolated_from_good_candidates():
     asyncio.run(AgentExplorer(complete, "Learn")._write_down(result))
     assert [a.name for a in result.tools] == ["list_books"]
     assert result.site_description == "Library"
+
+
+def test_streamed_model_tools_round_trip_parameter_sources():
+    events = []
+    async def complete(system, prompt):
+        return json.dumps({"tools": [{"name": "search", "description": "Search", "tier": "read",
+            "url": "https://x.test/search", "inputs": {"query": {"wire": "q", "examples": ["river", "forest"]}}}]})
+    result = AgentResult(observed=[Observed(step=1, method="GET", url=f"https://x.test/search?q={q}",
+                         resource_type="fetch", status=200, content_type="application/json") for q in ("river", "forest")])
+    asyncio.run(AgentExplorer(complete, "Read", on_event=events.append)._write_down(result))
+    definition = next(e["definition"] for e in events if e["type"] == "agent_tool")
+    assert Action.model_validate(definition).backend.fields["q"].name == "query"
+
+
+def test_provider_failure_does_not_repeat_across_capability_batches():
+    calls = []
+    async def complete(system, prompt):
+        calls.append(prompt)
+        raise RuntimeError("provider authentication failed")
+    result = AgentResult(observed=[Observed(step=1, method="GET", url="https://x.test/books",
+                         resource_type="document", status=200, content_type="text/html")])
+    asyncio.run(AgentExplorer(complete, "Read")._write_down(result))
+    assert len(calls) == 1 and result.errors

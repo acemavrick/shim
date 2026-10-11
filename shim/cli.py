@@ -47,6 +47,13 @@ async def _compile(args: argparse.Namespace) -> int:
             print(f"  HOWTO {event['intent']!r}: {event['steps']} step(s)", flush=True)
         elif kind == "describe_done":
             print(f"  model: {event['calls']} proposal(s), {event['failures']} failed", flush=True)
+        elif kind == "model_usage":
+            print(f"  model {event.get('provider', 'Anthropic')}: {event['elapsed_ms'] / 1000:.2f}s, "
+                  f"{event['input_tokens']} input / {event['output_tokens']} output tokens", flush=True)
+        elif kind == "model_error":
+            print(f"  model failed: {event['error']}", flush=True)
+        elif kind == "timing":
+            print(f"  time {event['stage']}: {event['elapsed_ms'] / 1000:.2f}s", flush=True)
         elif kind == "records":
             print(f"  DATA  {event['count']} declared record(s): {', '.join(event['types'])}", flush=True)
         elif kind == "skip":
