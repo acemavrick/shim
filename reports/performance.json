@@ -1,0 +1,336 @@
+{
+  "baseline_revision": "b6dd38949c7f3fc57ef9a9634f1cad90d024577b",
+  "compile_benchmark": {
+    "description": "No model; local HTTP server, 12 pages, 9 tools and 24 requests including one runtime call. Same latency and request gap before/after.",
+    "original": [
+      {
+        "compile_s": 14.201,
+        "call_s": 0.609,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 7.937,
+          "translate": 0.002,
+          "links": 0.0,
+          "check": 6.262
+        }
+      },
+      {
+        "compile_s": 14.083,
+        "call_s": 0.608,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 7.967,
+          "translate": 0.005,
+          "links": 0.0,
+          "check": 6.111
+        }
+      },
+      {
+        "compile_s": 14.059,
+        "call_s": 0.609,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 7.96,
+          "translate": 0.001,
+          "links": 0.0,
+          "check": 6.097
+        }
+      },
+      {
+        "median_compile_s": 14.083,
+        "concurrency": 4,
+        "latency_s": 0.6,
+        "request_gap_s": 0.35
+      }
+    ],
+    "initial_batch_optimization": [
+      {
+        "compile_s": 10.632,
+        "call_s": 0.607,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 5.9,
+          "translate": 0.003,
+          "links": 0.0,
+          "check": 4.729
+        }
+      },
+      {
+        "compile_s": 10.451,
+        "call_s": 0.608,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 5.894,
+          "translate": 0.005,
+          "links": 0.0,
+          "check": 4.552
+        }
+      },
+      {
+        "compile_s": 10.448,
+        "call_s": 0.608,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 5.887,
+          "translate": 0.003,
+          "links": 0.0,
+          "check": 4.558
+        }
+      },
+      {
+        "median_compile_s": 10.451,
+        "concurrency": 4,
+        "latency_s": 0.6,
+        "request_gap_s": 0.35
+      }
+    ],
+    "final_pipeline_optimization": [
+      {
+        "compile_s": 10.147,
+        "call_s": 0.607,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 5.404,
+          "translate": 0.004,
+          "links": 0.0,
+          "check": 4.738
+        }
+      },
+      {
+        "compile_s": 9.942,
+        "call_s": 0.61,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 5.368,
+          "translate": 0.005,
+          "links": 0.0,
+          "check": 4.569
+        }
+      },
+      {
+        "compile_s": 9.935,
+        "call_s": 0.61,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 5.366,
+          "translate": 0.004,
+          "links": 0.0,
+          "check": 4.565
+        }
+      },
+      {
+        "median_compile_s": 9.942,
+        "concurrency": 4,
+        "latency_s": 0.6,
+        "request_gap_s": 0.35
+      }
+    ],
+    "reduction_percent": 36.8,
+    "streaming_pipeline_optimization": [
+      {
+        "compile_s": 9.081,
+        "call_s": 0.609,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 8.904,
+          "translate": 0.007,
+          "links": 0.0,
+          "check": 0.17
+        },
+        "first_candidate_s": 1.262,
+        "first_verified_s": 1.874
+      },
+      {
+        "compile_s": 8.906,
+        "call_s": 0.604,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 8.889,
+          "translate": 0.003,
+          "links": 0.0,
+          "check": 0.014
+        },
+        "first_candidate_s": 1.249,
+        "first_verified_s": 1.861
+      },
+      {
+        "compile_s": 8.89,
+        "call_s": 0.607,
+        "pages": 12,
+        "tools": 9,
+        "requests": 24,
+        "phases_s": {
+          "startup": 0.0,
+          "explore": 8.878,
+          "translate": 0.002,
+          "links": 0.0,
+          "check": 0.01
+        },
+        "first_candidate_s": 1.244,
+        "first_verified_s": 1.854
+      },
+      {
+        "median_compile_s": 8.906,
+        "concurrency": 4,
+        "latency_s": 0.6,
+        "request_gap_s": 0.35
+      }
+    ],
+    "first_verified_median_s": 1.861
+  },
+  "runtime_extraction_benchmark": {
+    "original_revision": [
+      {
+        "scenario": "css_2000_rows_4_fields",
+        "median_extract_ms": 78.845,
+        "runs": 5,
+        "rows": 2000
+      },
+      {
+        "scenario": "json_20000_rows_5_fields",
+        "median_extract_ms": 60.119,
+        "runs": 5,
+        "rows": 20000
+      }
+    ],
+    "optimized": [
+      {
+        "scenario": "css_2000_rows_4_fields",
+        "median_extract_ms": 58.651,
+        "rows": 2000,
+        "runs": 5
+      },
+      {
+        "scenario": "json_20000_rows_5_fields",
+        "median_extract_ms": 28.367,
+        "rows": 20000,
+        "runs": 5
+      }
+    ]
+  },
+  "fresh_runtime_calls": {
+    "description": "Serial vs concurrent calls on optimized build. Controlled local server with 50 ms latency and 5 ms request gap. Every call returns a unique fresh generation; no result cache.",
+    "optimized_scenarios": [
+      {
+        "scenario": "hidden_form_refetch_10000_sections",
+        "latency_s": 0.05,
+        "median_refetch_ms": 126.73,
+        "runs": 5
+      },
+      {
+        "scenario": "independent_runtime_calls",
+        "calls": 8,
+        "concurrency": 1,
+        "latency_s": 0.05,
+        "request_gap_s": 0.005,
+        "median_calls_s": 0.468
+      },
+      {
+        "scenario": "independent_runtime_calls",
+        "calls": 8,
+        "concurrency": 4,
+        "latency_s": 0.05,
+        "request_gap_s": 0.005,
+        "median_calls_s": 0.132
+      }
+    ]
+  },
+  "codex_cli": {
+    "previous_version": "0.142.5",
+    "updated_version": "0.162.1",
+    "auth": "Existing ChatGPT login,verified with live completion",
+    "configured_binary": "codex"
+  },
+  "real_site_validation": {
+    "site": "https://www.befreed.ai",
+    "backend": "Codex CLI",
+    "steps": 4,
+    "shipped_tools": 5,
+    "pages": 6,
+    "model_proposals": 9,
+    "phase_seconds": {
+      "explore": 0.89,
+      "translate": 0.0,
+      "agent": 66.34,
+      "links": 0.0,
+      "check": 0.59,
+      "describe": 35.66
+    },
+    "estimated_total_seconds_from_rounded_phases": 103.48,
+    "mcp_detail_call": {
+      "status": 200,
+      "records": 1,
+      "call_s": 0.239
+    },
+    "note": "This live run preceded primary-argument deduplication; subsequent mock tests reduce identical failed primary/control checks from8HTTP+4model to2HTTP+1model. Full live agent latency remains dominated by model response and browser exploration."
+  },
+  "anthropic_validation": "Factory,SDK response handling, usage/errors and compile validation covered by tests; no real Anthropic credential was available for a live request.",
+  "wikipedia_validation": "HTTP request blocked by bot protection; recorded and stopped without bypass.",
+  "tests": {
+    "passed": 150,
+    "elapsed_s": 3.44,
+    "diff_whitespace_check": "passed"
+  },
+  "latest_real_site_validation": {
+    "total_s": 83.503,
+    "first_candidate_s": 1.476,
+    "first_verified_s": 75.696,
+    "tools": 3,
+    "pages": 2,
+    "model_calls": 9,
+    "model_input_tokens": 101593,
+    "model_output_tokens": 2828,
+    "site": "https://www.befreed.ai",
+    "backend": "Codex CLI gpt-6.1-sol",
+    "steps": 4,
+    "call": {
+      "action": "get_book",
+      "status": 200,
+      "records": 1,
+      "elapsed_s": 0.254
+    },
+    "comparison_note": "Model exploration is nondeterministic. This run shipped 3 tools versus 5 previously; the 83.503 s versus 103 s timings are not an equal-coverage speed comparison."
+  },
+  "streaming_ui_validation": {
+    "first_callable_tool_s": 6.864,
+    "compile_s": 25.746,
+    "tools": 9,
+    "live_calls_before_done": 1,
+    "site": "Local 600ms fixture",
+    "backend": "Codex CLI naming enabled; no browser agent; actual FastAPI SSE and Playwright browser",
+    "note": "This is distinct from the model-free 12-page benchmark; UI max_pages is 10."
+  }
+}

@@ -12,6 +12,7 @@ The agent explores once. The result is saved. No agent reinvents this site.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -333,6 +334,29 @@ class AgentExplorer:
             pass
         return None
 
+    async def _capture_page(self, page, result: AgentResult) -> None:
+        url = page.url
+        try:
+            async with asyncio.TaskGroup() as group:
+                html = group.create_task(page.content())
+                title = group.create_task(page.title())
+            result.pages.append(CrawledPage(url=url, html=html.result(), title=title.result()))
+        except Exception:
+            pass
+
+    async def _read_state(self, page, context, result: AgentResult, step: int,
+                          capture_page: bool) -> tuple[str, list[dict[str, str]]]:
+        # These reads describe one settled browser state. Join every task before
+        # asking for the next action; cancellation drains them before closing.
+        async with asyncio.TaskGroup() as group:
+            snapshot = group.create_task(page.locator("body").aria_snapshot())
+            anchors = group.create_task(page.locator("a[href]").evaluate_all(
+                "links => links.map(a => ({name: a.innerText.trim(), url: a.href})).slice(0, 60)"))
+            if capture_page:
+                group.create_task(self._capture_document(context, page.url, result, step))
+                group.create_task(self._capture_page(page, result))
+        return _trim_snapshot(snapshot.result()), anchors.result()
+
     async def run(self, start_url: str) -> AgentResult:
         from playwright.async_api import async_playwright
 
@@ -344,104 +368,98 @@ class AgentExplorer:
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True)
-            context = await browser.new_context(user_agent=USER_AGENT, service_workers="block")
-            await context.route("**/*", self._route_request)
-            page = await context.new_page()
-            def record_console(message):
-                console_messages.append(str(message)[:300])
-                del console_messages[:-24]
-            page.on("console", lambda msg: record_console(f"{msg.type}: {msg.text}"))
-            page.on("pageerror", lambda exc: record_console(f"pageerror: {exc}"))
-
-            async def on_response(response) -> None:
-                try:
-                    req = response.request
-                    ct = (response.headers or {}).get("content-type", "")
-                    obs = Observed(step=step_no, method=req.method, url=req.url,
-                                   resource_type=req.resource_type, status=response.status,
-                                   content_type=ct, post_data=req.post_data)
-                    if obs.interesting:
-                        try:
-                            obs.sample = (await response.text())[:4000]
-                        except Exception:
-                            pass
-                    result.observed.append(obs)
-                except Exception:
-                    pass
-
-            page.on("response", on_response)
-            await page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
-            canonical_host = urlsplit(page.url).netloc
             try:
-                await page.wait_for_load_state("networkidle", timeout=6_000)
-            except Exception:
-                pass
+                context = await browser.new_context(user_agent=USER_AGENT, service_workers="block")
+                await context.route("**/*", self._route_request)
+                page = await context.new_page()
+                def record_console(message):
+                    console_messages.append(str(message)[:300])
+                    del console_messages[:-24]
+                page.on("console", lambda msg: record_console(f"{msg.type}: {msg.text}"))
+                page.on("pageerror", lambda exc: record_console(f"pageerror: {exc}"))
 
-            last_error: str | None = None
-            while step_no < self.step_budget:
-                if page.url not in seen_pages:
-                    seen_pages.add(page.url)
-                    await self._capture_document(context, page.url, result, step_no)
+                async def on_response(response) -> None:
                     try:
-                        result.pages.append(CrawledPage(url=page.url, html=await page.content(),
-                                                        title=await page.title()))
+                        req = response.request
+                        ct = (response.headers or {}).get("content-type", "")
+                        obs = Observed(step=step_no, method=req.method, url=req.url,
+                                       resource_type=req.resource_type, status=response.status,
+                                       content_type=ct, post_data=req.post_data)
+                        if obs.interesting:
+                            try:
+                                obs.sample = (await response.text())[:4000]
+                            except Exception:
+                                pass
+                        result.observed.append(obs)
                     except Exception:
                         pass
 
-                snapshot = _trim_snapshot(await page.locator("body").aria_snapshot())
-                # Accessibility trees omit hrefs. Explicit URLs let the model
-                # choose among controls sharing the same visible label.
-                anchors = await page.locator("a[href]").evaluate_all(
-                    "links => links.map(a => ({name: a.innerText.trim(), url: a.href})).slice(0, 60)")
-                anchors = [a for a in anchors if urlsplit(a["url"]).netloc == canonical_host]
-                recent = [o.compact() for o in result.observed
-                          if o.step == step_no and o.interesting][-12:]
-                prompt = (
-                    f"INTENT: {self.intent}\nSTEP {step_no + 1} of {self.step_budget}\n"
-                    f"URL: {page.url}\n"
-                    + (f"LAST INSPECTION (untrusted evidence): {inspection}\n" if inspection else "")
-                    + (f"LAST STEP FAILED: {last_error}\n" if last_error else "")
-                    + f"STEPS SO FAR: {json.dumps(result.recipe)[:1200]}\n"
-                    f"REQUESTS SINCE LAST STEP:\n" + ("\n".join(recent) or "(none)") +
-                    f"\n\nSAME-SITE LINKS (use goto with the exact URL to distinguish repeated labels):\n{json.dumps(anchors)}"
-                    f"\n\nPAGE (accessibility tree):\n{snapshot}\n"
-                )
-                act = await self._ask_step(prompt)
-                step_no += 1
-                if act is None:
-                    last_error = "model returned no valid action"
-                    continue
-                if act.action == "done":
-                    result.summary = act.summary or ""
-                    await self._emit({"type": "agent_step", "step": step_no, "action": "done",
-                                      "name": "", "why": act.summary or ""})
-                    break
+                page.on("response", on_response)
+                await page.goto(start_url, wait_until="domcontentloaded", timeout=30_000)
+                canonical_host = urlsplit(page.url).netloc
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=6_000)
+                except Exception:
+                    pass
 
-                if act.action == "inspect":
-                    from .inspect import inspect_page
-                    evidence = await inspect_page(page, act.tool or "", selector=act.selector or "main",
-                                                  observed=result.observed, console=console_messages)
-                    inspection = json.dumps(evidence)[:8000]
-                    last_error = evidence.get("error")
-                    await self._emit({"type": "inspection", "step": step_no, "tool": act.tool,
-                                      "selector": act.selector, "evidence": evidence})
-                else:
-                    inspection = ""
-                    last_error = await self._do(page, act)
-                entry = {k: v for k, v in act.model_dump().items()
-                         if v and k in ("action", "role", "name", "text", "url", "tool", "selector")}
-                if last_error:
-                    entry["failed"] = last_error
-                result.recipe.append(entry)
-                await self._emit({"type": "agent_step", "step": step_no, "action": act.action,
-                                  "name": act.name or act.url or "", "why": act.why or "",
-                                  "failed": last_error})
+                last_error: str | None = None
+                while step_no < self.step_budget:
+                    capture_page = page.url not in seen_pages
+                    if capture_page:
+                        seen_pages.add(page.url)
+                    snapshot, anchors = await self._read_state(page, context, result, step_no, capture_page)
+                    # Accessibility trees omit hrefs. Explicit URLs let the model
+                    # choose among controls sharing the same visible label.
+                    anchors = [a for a in anchors if urlsplit(a["url"]).netloc == canonical_host]
+                    recent = [o.compact() for o in result.observed
+                              if o.step == step_no and o.interesting][-12:]
+                    prompt = (
+                        f"INTENT: {self.intent}\nSTEP {step_no + 1} of {self.step_budget}\n"
+                        f"URL: {page.url}\n"
+                        + (f"LAST INSPECTION (untrusted evidence): {inspection}\n" if inspection else "")
+                        + (f"LAST STEP FAILED: {last_error}\n" if last_error else "")
+                        + f"STEPS SO FAR: {json.dumps(result.recipe)[:1200]}\n"
+                        f"REQUESTS SINCE LAST STEP:\n" + ("\n".join(recent) or "(none)") +
+                        f"\n\nSAME-SITE LINKS (use goto with the exact URL to distinguish repeated labels):\n{json.dumps(anchors)}"
+                        f"\n\nPAGE (accessibility tree):\n{snapshot}\n"
+                    )
+                    act = await self._ask_step(prompt)
+                    step_no += 1
+                    if act is None:
+                        last_error = "model returned no valid action"
+                        continue
+                    if act.action == "done":
+                        result.summary = act.summary or ""
+                        await self._emit({"type": "agent_step", "step": step_no, "action": "done",
+                                          "name": "", "why": act.summary or ""})
+                        break
 
-            result.steps_taken = step_no
-            result.notes.extend(f"Blocked {r['method']} {r['url']} in conservative read-only mode; "
-                                "request safety was not established, so this flow was not tested."
-                                for r in self.blocked_requests[:12])
-            await browser.close()
+                    if act.action == "inspect":
+                        from .inspect import inspect_page
+                        evidence = await inspect_page(page, act.tool or "", selector=act.selector or "main",
+                                                      observed=result.observed, console=console_messages)
+                        inspection = json.dumps(evidence)[:8000]
+                        last_error = evidence.get("error")
+                        await self._emit({"type": "inspection", "step": step_no, "tool": act.tool,
+                                          "selector": act.selector, "evidence": evidence})
+                    else:
+                        inspection = ""
+                        last_error = await self._do(page, act)
+                    entry = {k: v for k, v in act.model_dump().items()
+                             if v and k in ("action", "role", "name", "text", "url", "tool", "selector")}
+                    if last_error:
+                        entry["failed"] = last_error
+                    result.recipe.append(entry)
+                    await self._emit({"type": "agent_step", "step": step_no, "action": act.action,
+                                      "name": act.name or act.url or "", "why": act.why or "",
+                                      "failed": last_error})
+
+                result.steps_taken = step_no
+                result.notes.extend(f"Blocked {r['method']} {r['url']} in conservative read-only mode; "
+                                    "request safety was not established, so this flow was not tested."
+                                    for r in self.blocked_requests[:12])
+            finally:
+                await browser.close()
 
         await self._write_down(result)
         return result
@@ -468,16 +486,19 @@ class AgentExplorer:
                   f"REQUESTS OBSERVED:\n" + "\n".join(lines) +
                   f"\n\nRENDERED PAGE EVIDENCE (same pages, cleaned HTML):\n{pages}"
                   f"\n\nOUTCOME: {result.summary}\n")
-        self.model_calls += 1
         await self._emit({"type": "agent_write_down", "requests": len(interesting), "pages": len(result.pages)})
         failure = "model returned no usable interface"
+        spec = None
         for _ in range(2):
+            self.model_calls += 1
             try:
                 reply = await self._complete(WRITEDOWN_SYSTEM, prompt)
                 match = _JSON_BLOCK.search(reply)
+                if match is None:
+                    raise ValueError("no JSON object in reply")
                 spec = _WriteDown.model_validate(json.loads(match.group(0)))
                 break
-            except Exception as exc:
+            except (ValueError, ValidationError, json.JSONDecodeError) as exc:
                 failure = f"{type(exc).__name__}: {str(exc)[:300]}"
                 prompt += f"\n\nYour previous reply was invalid ({exc}). Reply with only the JSON object."
                 if "token budget" in str(exc):
@@ -485,6 +506,11 @@ class AgentExplorer:
                                "at most 6 procedure steps, and 4 brief notes. Keep descriptions and summary concise. "
                                "Prioritize the best-evidenced reusable capabilities; do not repeat the page content.")
                 spec = None
+            except Exception as exc:
+                # Auth, network and provider failures cannot be repaired by
+                # asking for different JSON. The provider handles its retries.
+                failure = f"{type(exc).__name__}: {str(exc)[:300]}"
+                break
         if spec is None:
             result.errors.append(failure)
             await self._emit({"type": "agent_write_down_failed", "error": failure})
@@ -504,6 +530,10 @@ class AgentExplorer:
             action = _tool_to_action(t, start=result.pages[0].url if result.pages else "")
             if action:
                 result.tools.append(action)
+                # Publish each complete, evidence-backed definition immediately.
+                # The compiler owns candidate IDs, deduplication and checking.
+                await self._emit({"type": "agent_tool", "definition":
+                                  action.model_dump(mode="json", exclude_none=True)})
         for raw in spec.procedure[:12]:
             try:
                 step = Step.model_validate(raw)

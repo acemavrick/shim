@@ -205,7 +205,8 @@ def form_to_actions(desc: FormDescriptor) -> tuple[list[Action], list[Skip]]:
                 # Left empty on purpose: the response shape is unknown until we
                 # fire the request, so `check` infers the extractor from reality.
                 extract=Extract(kind="css", fields={}),
-                session=Session(scope="per-connection", carry_cookies=desc.method == "POST"),
+                session=Session(scope="per-connection" if desc.method == "POST" else "none",
+                                carry_cookies=desc.method == "POST"),
                 source=Source(
                     page=desc.page, form_index=desc.form_index,
                     submit=submit.text if submit else None,
@@ -247,9 +248,15 @@ def dedupe_actions(actions: list[Action]) -> tuple[list[Action], list[Skip]]:
     for action in kept:
         counts[action.name] = counts.get(action.name, 0) + 1
     used: dict[str, int] = {}
+    allocated = {name for name, count in counts.items() if count == 1}
     for action in kept:
-        if counts[action.name] > 1:
-            used[action.name] = used.get(action.name, 0) + 1
-            action.name = f"{action.name}_{used[action.name]}"
+        base_name = action.name
+        if counts[base_name] > 1:
+            suffix = used.get(base_name, 0) + 1
+            while f"{base_name}_{suffix}" in allocated:
+                suffix += 1
+            used[base_name] = suffix
+            action.name = f"{base_name}_{suffix}"
+            allocated.add(action.name)
 
     return kept, skips

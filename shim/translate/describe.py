@@ -49,6 +49,13 @@ class Completer(Protocol):
     async def __call__(self, system: str, user: str) -> str: ...
 
 
+def make_completer(config: Config, on_event=None, max_tokens: int = 4096) -> Completer:
+    if config.provider == "codex-cli":
+        from .codex import CodexCLICompleter
+        return CodexCLICompleter(config, on_event=on_event, max_tokens=max_tokens)
+    return AnthropicCompleter(config, on_event=on_event, max_tokens=max_tokens)
+
+
 SYSTEM = """You compile one observed website capability into a reusable typed tool.
 The product is a saved agent-readable website: request tools, procedures and content.
 Future agents use it without rediscovering the page. No model runs at call time.
@@ -147,7 +154,8 @@ def parse_proposal(text: str) -> Proposal:
 class AnthropicCompleter:
     def __init__(self, config: Config, on_event=None, max_tokens: int = 4096):
         from anthropic import AsyncAnthropic
-        self._client = AsyncAnthropic(api_key=config.anthropic_api_key)
+        self._client = AsyncAnthropic(api_key=config.anthropic_api_key, timeout=config.model_timeout,
+                                      max_retries=1)
         self._model = config.model
         self._on_event = on_event
         self._max_tokens = max_tokens
@@ -186,7 +194,7 @@ class ModelDescriber:
     def __init__(self, complete: Completer, page_html: dict[str, str] | None = None,
                  intent: str | None = None):
         self._complete = complete
-        self._pages = page_html or {}
+        self._pages = page_html if page_html is not None else {}
         self.intent = intent
         self.calls = 0
         self.failures = 0

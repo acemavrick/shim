@@ -3,17 +3,26 @@
 # Environment variables override these values.
 
 [keys]
-# Used only at compile time, to improve action names and descriptions.
-# Without it the compiler falls back to deterministic naming from the markup.
+# Used at compile time for browser decisions, tools and descriptions.
+# Without a key or CLI provider the compiler uses deterministic markup inference.
 anthropic = ""          # or export ANTHROPIC_API_KEY
 
 [model]
+provider = "anthropic" # anthropic | codex-cli | auto (key first, then CLI)
 name = "claude-sonnet-5"
 naming = true           # false disables model-assisted naming entirely
+# CLI mode reuses `codex login` authentication. No Anthropic key is required.
+# codex_binary = "codex" # or an absolute path to the desktop app's newer CLI
+# codex_model = "..."    # optional; otherwise reuse ~/.codex/config.toml's model
+codex_reasoning_effort = "low"
+timeout = 180           # seconds per CLI response
 
 [compile]
 max_pages = 12
 request_gap = 0.35      # seconds between requests; politeness
+crawl_concurrency = 4  # overlap page downloads; 1 restores serial crawling
+check_concurrency = 4  # overlap independent GET checks and model proposals
+agent_steps = 16       # maximum browser decisions; write-down is one extra call
 respect_robots = true
 user_agent = "shim-compiler/0.1 (site-to-agent translation layer)"
 

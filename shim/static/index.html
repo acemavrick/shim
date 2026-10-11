@@ -107,6 +107,12 @@
   .tier.irreversible { color: var(--danger); }
   .items { margin-left: auto; color: var(--faint); font: 11.5px var(--mono); }
   .desc { margin: 9px 0 0; color: var(--dim); font-size: 13.5px; }
+  .tool-state { font: 11px var(--mono); color: var(--dim); }
+  .tool-state.verified { color: var(--read); }
+  .tool-state.failed { color: var(--danger); }
+  .tool-state.checking { color: var(--accent); }
+  .tool-progress { margin: 0 0 14px; color: var(--dim); font: 12px var(--mono); }
+  .card[data-tool-state="checking"] { border-color: var(--accent); }
 
   .try { margin-top: 13px; display: flex; gap: 7px; }
   .try input {
@@ -289,11 +295,11 @@ async function loadLibrary() {
   } catch { $("library").textContent = "Saved compilations unavailable."; }
 }
 fetch("/api/config").then(r => r.json()).then(cfg => {
-  $("model").textContent = cfg.exploration_available ? `${cfg.provider} / ${cfg.model}` : "No API key configured";
+  $("model").textContent = cfg.exploration_available ? `${cfg.provider} / ${cfg.model}` : "No model provider configured";
   $("agent").checked = !!cfg.exploration_available;
   $("agent").disabled = !cfg.exploration_available;
   $("execution").textContent = cfg.runtime || "Python / Playwright Chromium";
-  if (!cfg.exploration_available) $("activity").textContent = "Add an Anthropic key to shim.config.toml for model exploration. Crawling still works without one.";
+  if (!cfg.exploration_available) $("activity").textContent = "Configure an Anthropic key or Codex CLI in shim.config.toml for model exploration. Crawling still works without a model.";
 }).catch(() => { $("model").textContent = "Configuration unavailable"; });
 loadLibrary();
 
@@ -309,37 +315,53 @@ function logLine(text) {
   log.scrollTop = log.scrollHeight;
 }
 
-function actionCard(ev) {
+function actionCard(ev, state = "verified") {
   const toolHost = ev.host || currentHost;
+  const schema = ev.schema || ev.definition?.input || {};
+  const names = ev.inputs || Object.keys(schema.properties || {});
   const card = el("div", "card");
+  card.dataset.toolState = state;
+  if (ev.candidate_id) card.dataset.candidateId = ev.candidate_id;
   const head = el("div", "card-head");
 
   const tool = el("div", "tool");
   tool.append(document.createTextNode(ev.name));
-  tool.append(el("span", "args", `(${(ev.inputs || []).join(", ")})`));
+  tool.append(el("span", "args", `(${names.join(", ")})`));
   head.append(tool);
   head.append(el("span", `tier ${ev.tier}`, ev.tier));
-  if (ev.items_found != null) {
-    head.append(el("span", "items", `${ev.items_found} records verified`));
+  head.append(el("span", `tool-state ${state}`, {
+    candidate:"Discovered", checking:"Verifying…", verified:"Verified", failed:"Verification failed",
+  }[state]));
+  if (state === "verified" && ev.items_found != null) {
+    head.append(el("span", "items", `${ev.items_found} record${ev.items_found === 1 ? "" : "s"} verified`));
   }
   card.append(head);
   card.append(el("p", "desc", ev.description));
+  if (state === "candidate" || state === "checking") {
+    card.append(el("p", "desc", state === "checking" ?
+      "Testing the request and extracted results." :
+      "Found while exploring. Waiting for verification."));
+  } else if (state === "failed") {
+    card.append(el("p", "desc", ev.detail || ev.error || ev.reason || "The request or extracted results did not pass verification."));
+  }
   if (ev.definition) {
     const details = el("details", "tool-code");
     details.append(el("summary", null, "Request and extractor code"));
     details.append(el("pre", "out", JSON.stringify(ev.definition, null, 2)));
-    const code = `import asyncio\nfrom shim.manifest import Action\nfrom shim.runtime.http import invoke_action\n\naction = Action.model_validate_json(${JSON.stringify(JSON.stringify(ev.definition))})\narguments = {}  # supply the required inputs shown above\nresult = asyncio.run(invoke_action(action, arguments))\nprint(result.records)`;
-    details.append(el("p", "desc", "Python replay (uses the same runtime as verification):"), el("pre", "out", code));
+    if (state === "verified") {
+      const code = `import asyncio\nfrom shim.manifest import Action\nfrom shim.runtime.http import invoke_action\n\naction = Action.model_validate_json(${JSON.stringify(JSON.stringify(ev.definition))})\narguments = {}  # supply the required inputs shown above\nresult = asyncio.run(invoke_action(action, arguments))\nprint(result.records)`;
+      details.append(el("p", "desc", "Python replay (uses the same runtime as verification):"), el("pre", "out", code));
+    }
     card.append(details);
   }
 
-  if (ev.tier === "read") {
+  if (state === "verified" && ev.tier === "read") {
     const row = el("div", "try");
     const input = el("input");
-    const names = ev.inputs || [];
     input.placeholder = names.length === 1 ? `${names[0]} …` : 'Inputs as JSON, e.g. {"query":"books"}';
-    if (names.length === 1 && ev.schema?.properties[names[0]]?.examples?.length)
-      input.value = ev.schema.properties[names[0]].examples[0];
+    if (names.length === 1 && schema.properties?.[names[0]]?.examples?.length)
+      input.value = schema.properties[names[0]].examples[0];
+    input.setAttribute("aria-label", `Arguments for ${ev.name}`);
     const run = el("button", null, "Call");
     run.type = "button";
     const out = el("pre", "out");
@@ -352,7 +374,7 @@ function actionCard(ev) {
       out.textContent = "calling the live site…";
       try {
         let args = names.length === 0 ? {} : names.length === 1 ? {[names[0]]:input.value} : JSON.parse(input.value);
-        for (const [name, prop] of Object.entries(ev.schema?.properties || {})) {
+        for (const [name, prop] of Object.entries(schema.properties || {})) {
           if (args[name] === undefined) continue;
           if (prop.type === "integer" || prop.type === "number") args[name] = Number(args[name]);
           if (prop.type === "boolean" && typeof args[name] === "string") {
@@ -365,6 +387,7 @@ function actionCard(ev) {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             host: toolHost, action: ev.name,
+            ...(ev.run_id ? {run_id:ev.run_id, candidate_id:ev.candidate_id} : {}),
             arguments: args,
           }),
         });
@@ -408,7 +431,36 @@ $("bar").onsubmit = (e) => {
 
   const tools = el("div");
   const skips = el("div");
+  const toolProgress = el("p", "tool-progress");
+  toolProgress.setAttribute("role", "status");
+  const candidates = new Map();
+  let stageLabel = "Starting compilation";
   let toolHeader = null, skipHeader = null;
+
+  function stageWithProgress() {
+    const pending = [...candidates.values()].filter(t => t.state === "checking").length;
+    setStage(stageLabel + (pending ? ` · ${pending} tool${pending === 1 ? "" : "s"} verifying` : ""), true);
+  }
+  function updateTool(ev) {
+    if (!toolHeader) {
+      toolHeader = el("h2", "section", "Tools discovered");
+      $("results").append(toolHeader, toolProgress, tools);
+    }
+    const key = ev.candidate_id || `name:${ev.name}`;
+    const previous = candidates.get(key);
+    const state = {tool_candidate:"candidate", tool_checking:"checking", action:"verified", action_failed:"failed"}[ev.type];
+    // Concurrent events may arrive after a candidate has already completed.
+    if (previous && ["verified", "failed"].includes(previous.state) && ["candidate", "checking"].includes(state)) return;
+    const data = {...previous?.data, ...ev};
+    const card = actionCard(data, state);
+    if (previous) previous.card.replaceWith(card);
+    else tools.append(card);
+    candidates.set(key, {data, state, card});
+    const counts = {candidate:0, checking:0, verified:0, failed:0};
+    for (const tool of candidates.values()) counts[tool.state]++;
+    toolProgress.textContent = `${candidates.size} discovered · ${counts.candidate} waiting · ${counts.checking} verifying · ${counts.verified} verified · ${counts.failed} failed`;
+    stageWithProgress();
+  }
 
   const intent = $("intent").value.trim();
   const agent = $("agent").checked ? "true" : "false";
@@ -419,7 +471,9 @@ $("bar").onsubmit = (e) => {
   source.onmessage = (msg) => {
     const ev = JSON.parse(msg.data);
 
-    if (ev.type === "model_start") {
+    if (ev.type === "timing") {
+      logLine(`${ev.stage}: ${(ev.elapsed_ms / 1000).toFixed(2)}s`);
+    } else if (ev.type === "model_start") {
       modelCalls++; $("model").textContent = ev.model;
       $("activity").textContent = `Waiting for model response (call ${modelCalls})…`;
     } else if (ev.type === "model_usage") {
@@ -451,7 +505,11 @@ $("bar").onsubmit = (e) => {
         translate: `Reading ${ev.forms ?? 0} form(s)`,
         check: `Verifying ${ev.candidates ?? 0} candidate action(s)`,
       }[ev.stage] || ev.stage;
-      setStage(label, true);
+      const active = ev.active_stages || ev.stages;
+      stageLabel = Array.isArray(active) && active.length ? active.map(s => ({
+        explore:"Crawling the site", check:"Verifying tools", agent:"Agent exploring", describe:"Naming tools",
+      }[s] || s)).join(" · ") : label;
+      stageWithProgress();
       $("activity").textContent = label;
     } else if (ev.type === "page") {
       logLine(`fetched  ${ev.url}`);
@@ -461,13 +519,11 @@ $("bar").onsubmit = (e) => {
     } else if (ev.type === "agent_done") {
       logLine(`agent done — ${ev.steps} steps, ${ev.observed} requests observed`);
       setStage(`agent finished: ${ev.summary || ""}`, true);
-    } else if (ev.type === "action") {
-      if (!toolHeader) {
-        toolHeader = el("h2", "section", "Tools shipped");
-        $("results").append(toolHeader, tools);
-      }
-      tools.append(actionCard(ev));
-    } else if (ev.type === "action_failed" || ev.type === "skip") {
+    } else if (["tool_candidate", "tool_checking", "action", "action_failed"].includes(ev.type)) {
+      updateTool(ev);
+      if (ev.type === "action") logLine(`verified ${ev.name}`);
+      if (ev.type === "action_failed") logLine(`verification failed ${ev.name}: ${ev.error || ev.reason || "check failed"}`);
+    } else if (ev.type === "skip") {
       if (!skipHeader) {
         skipHeader = el("h2", "section", "Skipped, and why");
         $("results").append(skipHeader, skips);
@@ -482,6 +538,9 @@ $("bar").onsubmit = (e) => {
       $("activity").textContent = ev.message;
       source.close(); stopRun();
     } else if (ev.type === "done") {
+      // The complete manifest is now saved; subsequent calls can outlive the
+      // temporary registry used while this compilation was still running.
+      for (const tool of candidates.values()) delete tool.data.run_id;
       setStage(ev.blocked ? "stopped — the site blocks automated access" : "compiled", false);
       $("activity").textContent = "Saved. Calling shipped tools does not run a model.";
       $("results").prepend(overview(ev));
