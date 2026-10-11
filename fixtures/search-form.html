@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+<head><base href="https://shop.example.com/catalog/"></head>
+<body>
+  <!-- GET form with an action that already carries a query string.
+       Per the HTML spec, submitting REPLACES ?page=2 rather than appending. -->
+  <form action="/search?page=2" method="get">
+    <label for="q">Search catalog</label>
+    <input type="text" id="q" name="q" required maxlength="80">
+    <input type="hidden" name="category" value="shoes">
+    <select name="sort">
+      <option value="rel">Relevance</option>
+      <option value="price_asc" selected>Price: low to high</option>
+    </select>
+    <input type="checkbox" name="in_stock" value="1" checked>
+    <input type="radio" name="size" value="m" checked>
+    <input type="radio" name="size" value="l">
+    <input type="text" name="ignored" disabled>
+    <input type="reset" value="Clear">
+    <button type="submit">Search</button>
+  </form>
+
+  <!-- Two submit buttons on one form that branch server-side. -->
+  <form action="/cart/add" method="post">
+    <input type="hidden" name="sku" value="tr2">
+    <button type="submit" name="intent" value="add_to_cart">Add to cart</button>
+    <button type="submit" name="intent" value="buy_now">Buy now</button>
+  </form>
+
+  <form action="/upload" method="post" enctype="multipart/form-data">
+    <input type="file" name="photo">
+  </form>
+
+  <ul>
+    <li class="product-card" data-id="tr2">
+      <a class="title" href="/products/trail-runner-2">Trail Runner 2</a>
+      <span class="price">$89.00</span>
+    </li>
+    <li class="product-card" data-id="rw1">
+      <a class="title" href="/products/road-walker">Road Walker</a>
+      <span class="price">$1,249.50</span>
+    </li>
+  </ul>
+</body>
+</html>

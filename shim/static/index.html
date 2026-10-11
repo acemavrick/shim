@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>shim — site to agent</title>
+<style>
+  :root {
+    --bg: #0a0b0d;
+    --panel: #12141a;
+    --line: #23262f;
+    --text: #e8e6e3;
+    --dim: #8b8f9a;
+    --faint: #5a5f6b;
+    --read: #5eb3a1;
+    --write: #d8a657;
+    --danger: #e06c75;
+    --accent: #7aa2f7;
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 56px 28px 96px; }
+
+  header { margin-bottom: 40px; }
+  h1 {
+    margin: 0 0 6px; font-size: 15px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--dim);
+  }
+  .tagline { margin: 0; font-size: 30px; line-height: 1.22; letter-spacing: -.021em; font-weight: 600; }
+  .tagline em { font-style: normal; color: var(--accent); }
+  .sub { margin: 12px 0 0; color: var(--dim); max-width: 60ch; font-size: 14.5px; }
+
+  form.bar { display: flex; gap: 10px; margin: 32px 0 8px; flex-wrap: wrap; }
+  form.bar .intent-row { display: flex; gap: 10px; width: 100%; align-items: center; }
+  form.bar input[type=text] {
+    flex: 1; padding: 11px 15px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); font: 13.5px -apple-system, system-ui, sans-serif;
+    outline: none; transition: border-color .15s;
+  }
+  form.bar input[type=text]:focus { border-color: var(--accent); }
+  label.agent { display: flex; gap: 7px; align-items: center; color: var(--dim);
+                font-size: 13px; white-space: nowrap; cursor: pointer; }
+  label.agent input { accent-color: var(--accent); }
+  input[type=url] {
+    flex: 1; padding: 13px 15px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); font: 14px var(--mono);
+    outline: none; transition: border-color .15s;
+  }
+  input[type=url]:focus { border-color: var(--accent); }
+  button {
+    padding: 13px 22px; border-radius: 9px; border: 1px solid transparent;
+    background: var(--accent); color: #0a0b0d; font-size: 14px; font-weight: 650;
+    cursor: pointer; transition: opacity .15s;
+  }
+  button:hover:not(:disabled) { opacity: .88; }
+  button:disabled { opacity: .45; cursor: default; }
+
+  .presets { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 36px; }
+  .presets span { color: var(--faint); font-size: 12.5px; margin-right: 2px; }
+  .presets button {
+    background: none; border: 1px solid var(--line); color: var(--dim);
+    padding: 5px 11px; font-size: 12.5px; font-weight: 500; border-radius: 6px;
+    font-family: var(--mono);
+  }
+  .presets button:hover:not(:disabled) { color: var(--text); border-color: var(--faint); opacity: 1; }
+
+  .stage {
+    display: flex; align-items: center; gap: 11px; padding: 11px 0;
+    color: var(--dim); font: 12.5px var(--mono); letter-spacing: .04em;
+    border-bottom: 1px solid var(--line); margin-bottom: 4px;
+    text-transform: uppercase;
+  }
+  .stage.hidden { display: none; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .dot.spin { animation: pulse 1.1s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+
+  .log { font: 12px var(--mono); color: var(--faint); max-height: 108px;
+         overflow-y: auto; margin: 10px 0 26px; }
+  .log div { padding: 1.5px 0; }
+
+  h2.section {
+    font-size: 11.5px; text-transform: uppercase; letter-spacing: .13em;
+    color: var(--faint); margin: 34px 0 14px; font-weight: 600;
+  }
+
+  .card {
+    border: 1px solid var(--line); border-radius: 11px; background: var(--panel);
+    padding: 17px 19px; margin-bottom: 11px;
+  }
+  @keyframes rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: none; } }
+
+  .card-head { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; }
+  .tool { font: 15px var(--mono); font-weight: 600; }
+  .tool .args { color: var(--faint); font-weight: 400; }
+  .tier {
+    font: 10.5px var(--mono); text-transform: uppercase; letter-spacing: .1em;
+    padding: 2.5px 7px; border-radius: 4px; border: 1px solid currentColor;
+  }
+  .tier.read { color: var(--read); }
+  .tier.reversible { color: var(--write); }
+  .tier.irreversible { color: var(--danger); }
+  .items { margin-left: auto; color: var(--faint); font: 11.5px var(--mono); }
+  .desc { margin: 9px 0 0; color: var(--dim); font-size: 13.5px; }
+
+  .try { margin-top: 13px; display: flex; gap: 7px; }
+  .try input {
+    flex: 1; padding: 8px 11px; border-radius: 7px; border: 1px solid var(--line);
+    background: #0d0f14; color: var(--text); font: 12.5px var(--mono); outline: none;
+  }
+  .try button { padding: 8px 15px; font-size: 12.5px; border-radius: 7px; }
+  pre.out {
+    margin: 11px 0 0; padding: 12px 13px; background: #0d0f14; border-radius: 8px;
+    border: 1px solid var(--line); font: 11.5px/1.5 var(--mono); color: var(--dim);
+    max-height: 230px; overflow: auto; white-space: pre-wrap;
+  }
+
+  .skip {
+    display: flex; gap: 11px; align-items: baseline; padding: 8px 0;
+    border-bottom: 1px solid var(--line); font-size: 13px; color: var(--dim);
+  }
+  .skip .reason {
+    font: 10.5px var(--mono); text-transform: uppercase; letter-spacing: .08em;
+    color: var(--danger); white-space: nowrap;
+  }
+  .skip .what { font: 11.5px var(--mono); color: var(--faint);
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .summary {
+    margin-top: 30px; padding: 17px 19px; border: 1px solid var(--line);
+    border-radius: 11px; background: var(--panel); display: flex; gap: 34px; flex-wrap: wrap;
+  }
+  .summary div span { display: block; font: 11px var(--mono); text-transform: uppercase;
+                      letter-spacing: .1em; color: var(--faint); margin-bottom: 4px; }
+  .summary div strong { font-size: 22px; font-weight: 650; }
+  .serve { margin-top: 15px; color: var(--dim); font-size: 13px; }
+  .serve code { font: 12.5px var(--mono); color: var(--accent);
+                background: #0d0f14; padding: 2.5px 7px; border-radius: 5px; }
+  .empty { color: var(--faint); font-size: 13.5px; font-style: italic; }
+  .runtime { padding: 18px 0; border-block: 1px solid var(--line); margin: 24px 0; }
+  .runtime h2 { font-size: 16px; margin: 0 0 12px; }
+  .runtime dl { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:18px; margin:0; }
+  .runtime dt { font-size:12px; color:var(--dim); }
+  .runtime dd { margin:5px 0 0; font:13px var(--mono); overflow-wrap:anywhere; }
+  .runtime details { margin-top:16px; color:var(--dim); }
+  .runtime pre { max-height:280px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; font:12px/1.6 var(--mono); }
+  .artifacts { display:flex; gap:12px; flex-wrap:wrap; margin:20px 0; }
+  .tool-code { margin-top:16px; color:var(--dim); font-size:13px; }
+  .tool-code pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:400px; overflow:auto; }
+  a { color:var(--accent); }
+  #saved { margin-top:36px; }
+  #saved button { background:transparent; color:var(--text); border-color:var(--line); padding:9px 12px; margin:0 8px 8px 0; }
+  :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+  @media(max-width:600px) { .wrap { padding:28px 18px; } .runtime dl { grid-template-columns:1fr 1fr; } .intent-row { flex-wrap:wrap; } form.bar .intent-row input { flex-basis:100%; } }
+  @media(prefers-reduced-motion:reduce) { *, *::before, *::after { animation:none!important; transition:none!important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>shim</h1>
+    <p class="tagline">Compile a website for agents.</p>
+    <p class="sub">A model explores the site. Shim verifies reusable tools and saves readable
+      content, browser instructions, and an MCP interface. No model runs at call time.</p>
+  </header>
+
+  <form class="bar" id="bar">
+    <input type="url" id="url" placeholder="https://example.com" required
+           value="https://randeria.dev" spellcheck="false" aria-label="Website URL">
+    <button type="submit" id="go">Compile</button>
+    <div class="intent-row">
+      <input type="text" id="intent" placeholder="Optional goal — blank means learn this site's capabilities" spellcheck="false" aria-label="Compilation goal">
+      <label class="agent"><input type="checkbox" id="agent"> let an agent explore</label>
+    </div>
+  </form>
+
+  <div class="presets" id="presets">
+    <span>try:</span>
+  </div>
+
+  <section class="runtime" id="runtime" aria-label="Compiler runtime">
+    <h2>Compiler runtime</h2>
+    <dl>
+      <div><dt>Model</dt><dd id="model">Loading configuration…</dd></div>
+      <div><dt>Execution</dt><dd id="execution">Python / Chromium</dd></div>
+      <div><dt>Elapsed</dt><dd id="elapsed">0s</dd></div>
+      <div><dt>Model usage</dt><dd id="usage">No calls yet</dd></div>
+    </dl>
+    <p id="activity" aria-live="polite">Ready. Exploration is read-only.</p>
+    <details><summary>Browser / devtools evidence</summary><pre id="evidence">DOM, links, network responses and console errors appear here when the model inspects them.</pre></details>
+  </section>
+
+  <div class="stage hidden" id="stage"><div class="dot"></div><span id="stage-text"></span></div>
+  <div class="log" id="log"></div>
+
+  <div id="results"></div>
+  <section id="saved"><h2>Saved compilations</h2><div id="library">Loading…</div></section>
+</div>
+
+<script>
+const PRESETS = [
+  ["Portfolio", "https://randeria.dev", "List projects and learn how to fetch details of individual projects."],
+  ["Books", "https://www.gutenberg.org", "Learn how to search books and open an individual ebook."],
+  ["Demo shop", "https://books.toscrape.com", "List books, browse categories, and fetch book details. Read-only."],
+];
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+
+const presets = $("presets");
+for (const [label, url, intent] of PRESETS) {
+  const b = el("button", null, label);
+  b.type = "button";
+  b.onclick = () => { $("url").value = url; $("intent").value = intent; $("bar").requestSubmit(); };
+  presets.append(b);
+}
+
+let currentHost = null;
+let runTimer = null, inputTokens = 0, outputTokens = 0, modelCalls = 0;
+let evidenceLog = [];
+function showEvidence(entry) {
+  evidenceLog.push(entry); evidenceLog = evidenceLog.slice(-20);
+  $("evidence").textContent = JSON.stringify(evidenceLog, null, 2);
+}
+function stopRun() {
+  clearInterval(runTimer);
+  $("go").disabled = false;
+  document.querySelectorAll("#presets button, #library button").forEach(b => b.disabled = false);
+}
+function artifacts(host, formats) {
+  const row = el("nav", "artifacts");
+  for (const name of formats || []) {
+    const a = el("a", null, name);
+    a.href = `/agent/${encodeURIComponent(host)}/${encodeURIComponent(name)}`;
+    a.target = "_blank"; a.rel = "noopener"; row.append(a);
+  }
+  return row;
+}
+function overview(m) {
+  const section = el("section", "card");
+  section.append(el("h2", null, "About this site"));
+  section.append(el("p", "desc", m.site_description || m.pages?.[0]?.title || "Site overview unavailable; see readable pages."));
+  if (m.pages?.length) {
+    const details = el("details"); details.append(el("summary", null, `Readable content (${m.pages.length} pages)`));
+    for (const page of m.pages) {
+      const link = el("a", null, page.title || page.url); link.href = page.url;
+      link.target = "_blank"; link.rel = "noopener";
+      details.append(link, el("pre", "out", page.markdown || "No readable content captured."));
+    }
+    section.append(details);
+  }
+  return section;
+}
+async function loadLibrary() {
+  try {
+    const data = await (await fetch("/api/sites")).json();
+    $("library").replaceChildren();
+    for (const site of data.sites) {
+      const b = el("button", null, `${site.host} (${site.actions} tools)`);
+      b.type = "button";
+      b.onclick = async () => {
+        try {
+          const res = await fetch(`/api/manifest/${encodeURIComponent(site.host)}`);
+          if (!res.ok) throw new Error("Could not load saved compilation");
+          const m = await res.json(); currentHost = m.host;
+          $("results").replaceChildren(el("h2", null, `Saved: ${m.host}`));
+          $("results").append(overview(m));
+          if (m.exploration_summary) $("results").append(el("p", "desc", m.exploration_summary));
+          for (const a of m.actions.filter(a => a.check?.passed))
+            $("results").append(actionCard({...a, definition:a, inputs:Object.keys(a.input.properties), schema:a.input, items_found:a.check.items_found}));
+          for (const note of m.notes || []) $("results").append(el("p", "desc", note));
+          $("results").append(el("h2", "section", "Produced files"), artifacts(m.host, site.formats));
+          setStage("saved compilation — no model run", false);
+        } catch (err) { setStage(String(err), false); }
+      };
+      $("library").append(b);
+    }
+    if (!data.sites.length) $("library").textContent = "Compile a site to save its interface here.";
+  } catch { $("library").textContent = "Saved compilations unavailable."; }
+}
+fetch("/api/config").then(r => r.json()).then(cfg => {
+  $("model").textContent = cfg.exploration_available ? `${cfg.provider} / ${cfg.model}` : "No API key configured";
+  $("agent").checked = !!cfg.exploration_available;
+  $("agent").disabled = !cfg.exploration_available;
+  $("execution").textContent = cfg.runtime || "Python / Playwright Chromium";
+  if (!cfg.exploration_available) $("activity").textContent = "Add an Anthropic key to shim.config.toml for model exploration. Crawling still works without one.";
+}).catch(() => { $("model").textContent = "Configuration unavailable"; });
+loadLibrary();
+
+function setStage(text, spinning) {
+  $("stage").classList.remove("hidden");
+  $("stage-text").textContent = text;
+  $("stage").querySelector(".dot").classList.toggle("spin", spinning);
+}
+
+function logLine(text) {
+  const log = $("log");
+  log.append(el("div", null, text));
+  log.scrollTop = log.scrollHeight;
+}
+
+function actionCard(ev) {
+  const toolHost = ev.host || currentHost;
+  const card = el("div", "card");
+  const head = el("div", "card-head");
+
+  const tool = el("div", "tool");
+  tool.append(document.createTextNode(ev.name));
+  tool.append(el("span", "args", `(${(ev.inputs || []).join(", ")})`));
+  head.append(tool);
+  head.append(el("span", `tier ${ev.tier}`, ev.tier));
+  if (ev.items_found != null) {
+    head.append(el("span", "items", `${ev.items_found} records verified`));
+  }
+  card.append(head);
+  card.append(el("p", "desc", ev.description));
+  if (ev.definition) {
+    const details = el("details", "tool-code");
+    details.append(el("summary", null, "Request and extractor code"));
+    details.append(el("pre", "out", JSON.stringify(ev.definition, null, 2)));
+    const code = `import asyncio\nfrom shim.manifest import Action\nfrom shim.runtime.http import invoke_action\n\naction = Action.model_validate_json(${JSON.stringify(JSON.stringify(ev.definition))})\narguments = {}  # supply the required inputs shown above\nresult = asyncio.run(invoke_action(action, arguments))\nprint(result.records)`;
+    details.append(el("p", "desc", "Python replay (uses the same runtime as verification):"), el("pre", "out", code));
+    card.append(details);
+  }
+
+  if (ev.tier === "read") {
+    const row = el("div", "try");
+    const input = el("input");
+    const names = ev.inputs || [];
+    input.placeholder = names.length === 1 ? `${names[0]} …` : 'Inputs as JSON, e.g. {"query":"books"}';
+    if (names.length === 1 && ev.schema?.properties[names[0]]?.examples?.length)
+      input.value = ev.schema.properties[names[0]].examples[0];
+    const run = el("button", null, "Call");
+    run.type = "button";
+    const out = el("pre", "out");
+    out.style.display = "none";
+
+    run.onclick = async () => {
+      run.disabled = true;
+      run.textContent = "…";
+      out.style.display = "block";
+      out.textContent = "calling the live site…";
+      try {
+        let args = names.length === 0 ? {} : names.length === 1 ? {[names[0]]:input.value} : JSON.parse(input.value);
+        for (const [name, prop] of Object.entries(ev.schema?.properties || {})) {
+          if (args[name] === undefined) continue;
+          if (prop.type === "integer" || prop.type === "number") args[name] = Number(args[name]);
+          if (prop.type === "boolean" && typeof args[name] === "string") {
+            if (!["true", "false"].includes(args[name])) throw new Error(`${name} must be true or false`);
+            args[name] = args[name] === "true";
+          }
+        }
+        const res = await fetch("/api/call", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            host: toolHost, action: ev.name,
+            arguments: args,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Tool call failed");
+        if (data.blocked || (typeof data.status === "number" && data.status >= 400))
+          throw new Error(`Live site returned HTTP ${data.status}${data.blocked ? " — automated access blocked" : ""}`);
+        out.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        out.textContent = String(err);
+      }
+      run.disabled = false;
+      run.textContent = "Call";
+    };
+    input.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); run.click(); } };
+
+    if (names.length) row.append(input);
+    row.append(run);
+    card.append(row, out);
+  }
+  return card;
+}
+
+$("bar").onsubmit = (e) => {
+  e.preventDefault();
+  const url = $("url").value.trim();
+  if (!url) return;
+
+  try { currentHost = new URL(url).host; } catch { return; }
+
+  $("go").disabled = true;
+  $("results").innerHTML = "";
+  $("log").innerHTML = "";
+  inputTokens = 0; outputTokens = 0; modelCalls = 0;
+  $("usage").textContent = "No calls yet";
+  $("evidence").textContent = "Waiting for browser inspection…";
+  evidenceLog = [];
+  const started = Date.now(); clearInterval(runTimer);
+  runTimer = setInterval(() => $("elapsed").textContent = `${Math.floor((Date.now()-started)/1000)}s`, 1000);
+  document.querySelectorAll("#presets button, #library button").forEach((b) => (b.disabled = true));
+
+  const tools = el("div");
+  const skips = el("div");
+  let toolHeader = null, skipHeader = null;
+
+  const intent = $("intent").value.trim();
+  const agent = $("agent").checked ? "true" : "false";
+  const qs = `url=${encodeURIComponent(url)}` +
+    (intent ? `&intent=${encodeURIComponent(intent)}` : "") + `&agent=${agent}`;
+  const source = new EventSource(`/api/compile?${qs}`);
+
+  source.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+
+    if (ev.type === "model_start") {
+      modelCalls++; $("model").textContent = ev.model;
+      $("activity").textContent = `Waiting for model response (call ${modelCalls})…`;
+    } else if (ev.type === "model_usage") {
+      inputTokens += ev.input_tokens || 0; outputTokens += ev.output_tokens || 0;
+      $("usage").textContent = `${inputTokens} in / ${outputTokens} out (${modelCalls} calls)`;
+      logLine(`model response ${(ev.elapsed_ms / 1000).toFixed(1)}s${ev.stop_reason === "max_tokens" ? " — output truncated" : ""}`);
+    } else if (ev.type === "inspection") {
+      $("activity").textContent = `Inspecting ${ev.tool}${ev.selector ? `: ${ev.selector}` : ""}`;
+      showEvidence({tool:ev.tool, step:ev.step, evidence:ev.evidence});
+      logLine(`inspect ${ev.tool} (step ${ev.step})`);
+    } else if (ev.type === "exploration_blocked") {
+      showEvidence({method:ev.method, url:ev.url, resource_type:ev.resource_type, warning:ev.message});
+      logLine(`read-only policy blocked ${ev.method || "request"}: ${ev.url}`);
+    } else if (ev.type === "model_error" || ev.type === "agent_write_down_failed") {
+      $("activity").textContent = ev.error || ev.message;
+      logLine(`${ev.type}: ${ev.error || ev.message}`);
+    } else if (ev.type === "agent_write_down") {
+      $("activity").textContent = "Writing tools, browser instructions and limitations from observed evidence…";
+    } else if (ev.type === "document_probe") {
+      logLine(`direct read ${ev.status}: ${ev.url}`);
+    }
+
+    if (ev.type === "stage") {
+      const label = {
+        agent: `An agent is exploring: ${ev.intent || ""}`,
+        links: "Reading link patterns",
+        describe: "Model is naming and describing tools",
+        explore: "Crawling the site",
+        translate: `Reading ${ev.forms ?? 0} form(s)`,
+        check: `Verifying ${ev.candidates ?? 0} candidate action(s)`,
+      }[ev.stage] || ev.stage;
+      setStage(label, true);
+      $("activity").textContent = label;
+    } else if (ev.type === "page") {
+      logLine(`fetched  ${ev.url}`);
+    } else if (ev.type === "agent_step") {
+      logLine(`agent ${ev.failed ? "x" : ">"} ${ev.action} ${JSON.stringify(ev.name)}  ${ev.why || ""}`);
+      $("activity").textContent = `Step ${ev.step}: ${ev.action} ${ev.name || ""}${ev.failed ? ` — ${ev.failed}` : ""}`;
+    } else if (ev.type === "agent_done") {
+      logLine(`agent done — ${ev.steps} steps, ${ev.observed} requests observed`);
+      setStage(`agent finished: ${ev.summary || ""}`, true);
+    } else if (ev.type === "action") {
+      if (!toolHeader) {
+        toolHeader = el("h2", "section", "Tools shipped");
+        $("results").append(toolHeader, tools);
+      }
+      tools.append(actionCard(ev));
+    } else if (ev.type === "action_failed" || ev.type === "skip") {
+      if (!skipHeader) {
+        skipHeader = el("h2", "section", "Skipped, and why");
+        $("results").append(skipHeader, skips);
+      }
+      const row = el("div", "skip");
+      row.append(el("span", "reason", ev.reason || "check failed"));
+      row.append(el("span", null, ev.detail || ev.error || ""));
+      row.append(el("span", "what", ev.what || ev.name || ""));
+      skips.append(row);
+    } else if (ev.type === "error") {
+      setStage(`failed — ${ev.message}`, false);
+      $("activity").textContent = ev.message;
+      source.close(); stopRun();
+    } else if (ev.type === "done") {
+      setStage(ev.blocked ? "stopped — the site blocks automated access" : "compiled", false);
+      $("activity").textContent = "Saved. Calling shipped tools does not run a model.";
+      $("results").prepend(overview(ev));
+      fetch(`/api/manifest/${encodeURIComponent(ev.host)}`).then(r => r.json()).then(m => {
+        const old = $("results").querySelector("section.card");
+        if (currentHost === ev.host && old) old.replaceWith(overview(m));
+      }).catch(() => {});
+      if (ev.exploration_summary) {
+        $("results").append(el("h2", "section", "What exploration found"), el("p", "desc", ev.exploration_summary));
+      }
+      if (ev.notes?.length) {
+        $("results").append(el("h2", "section", "Browser guidance and limitations"));
+        for (const note of ev.notes) $("results").append(el("p", "desc", note));
+      }
+      $("results").append(el("h2", "section", "Produced files"), artifacts(ev.host, ev.formats));
+
+      const sum = el("div", "summary");
+      for (const [label, value] of [
+        ["tools shipped", ev.shipped],
+        ["candidates found", ev.generated],
+        ["pages crawled", ev.pages],
+        ["skipped", (ev.skipped || []).length],
+      ]) {
+        const box = el("div");
+        box.append(el("span", null, label), el("strong", null, String(value)));
+        sum.append(box);
+      }
+      $("results").append(sum);
+
+      if (ev.procedures && ev.procedures.length) {
+        const h = el("h2", "section", "How to");
+        $("results").append(h);
+        for (const proc of ev.procedures) {
+          const card = el("div", "card");
+          card.append(el("div", "tool", proc.intent));
+          const ol = el("ol"); ol.style.cssText = "margin:10px 0 0 18px;color:var(--dim);font-size:13.5px";
+          for (const st of proc.steps) {
+            const li = el("li");
+            if (st.action) { li.append(document.createTextNode("call ")); li.append(el("code", null, `${st.action}(${Object.entries(st.with||{}).map(([k,v])=>k+"="+v).join(", ")})`)); }
+            else if (st.url) li.textContent = `read ${st.url}`;
+            else li.textContent = st.note || "";
+            ol.append(li);
+          }
+          card.append(ol);
+          $("results").append(card);
+        }
+      }
+
+      const serve = el("p", "serve");
+      if (ev.shipped > 0) {
+        serve.append(document.createTextNode("Connect an agent: "));
+        serve.append(el("code", null, `uv run python -m shim.cli serve ${ev.host}`));
+      } else {
+        serve.className = "serve empty";
+        serve.textContent =
+          ev.generated === 0 ? "No executable tools discovered. Readable content and browser guidance are available in the saved outputs." :
+          "No tools passed verification. See the skipped candidates above; readable content is still saved.";
+      }
+      $("results").append(serve);
+
+      source.close();
+      stopRun(); loadLibrary();
+    }
+  };
+
+  source.onerror = () => {
+    setStage("connection lost", false);
+    source.close();
+    stopRun();
+  };
+};
+</script>
+</body>
+</html>

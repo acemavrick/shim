@@ -1,0 +1,34 @@
+[project]
+name = "shim"
+version = "0.1.0"
+description = "Compiles a website URL into an agent version: structured content + typed MCP actions."
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=2.3.0",
+    "httpx>=0.27",
+    "socksio>=1.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "pydantic>=2.9",
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+    "anthropic>=0.40",
+    # Pinned: the locally cached chromium-1243 belongs to 1.63; newer downloads ~300MB.
+    "playwright==1.63.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+shim = "shim.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["shim"]

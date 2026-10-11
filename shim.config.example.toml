@@ -1,0 +1,22 @@
+# Copy to shim.config.toml and fill in. That file is gitignored.
+# Everything here is optional: the compiler runs with no keys at all.
+# Environment variables override these values.
+
+[keys]
+# Used only at compile time, to improve action names and descriptions.
+# Without it the compiler falls back to deterministic naming from the markup.
+anthropic = ""          # or export ANTHROPIC_API_KEY
+
+[model]
+name = "claude-sonnet-5"
+naming = true           # false disables model-assisted naming entirely
+
+[compile]
+max_pages = 12
+request_gap = 0.35      # seconds between requests; politeness
+respect_robots = true
+user_agent = "shim-compiler/0.1 (site-to-agent translation layer)"
+
+# Verify non-read actions. Only ever enable for sites you own -- it fires
+# real writes (bookings, orders, messages) at whatever you point it at.
+allow_writes = false
