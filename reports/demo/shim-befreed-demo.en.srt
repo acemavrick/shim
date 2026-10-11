@@ -1,0 +1,29 @@
+1
+00:00:00,000 --> 00:00:05,000
+Websites are built for people.
+Give agents reusable tools.
+
+2
+00:00:05,000 --> 00:00:10,000
+Open a book. Read its details.
+BeFreed public website · actual browser navigation
+
+3
+00:00:10,000 --> 00:00:16,000
+Discover. Verify. Then call.
+Real compile replay · waiting compressed
+
+4
+00:00:16,000 --> 00:00:22,000
+One input: the book slug.
+Request and extraction rules are saved.
+
+5
+00:00:22,000 --> 00:00:30,000
+Call the real site. Get structured data.
+HTTP 200 · 1 book · no model at runtime
+
+6
+00:00:30,000 --> 00:00:35,000
+Compile once. Reuse anywhere.
+MCP · OpenAPI · llms.txt
