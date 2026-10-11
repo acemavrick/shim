@@ -81,8 +81,9 @@ def test_fast_path_requires_agent_provenance_and_distinct_control(monkeypatch, s
     monkeypatch.setattr(checker, "send_http", send)
     checked, skip = asyncio.run(checker.check_action(candidate(source=source, examples=examples), ["alpha", "beta"], describer=describe))
     if examples == ["alpha"]:
-        assert len(calls) == 0 and skip is not None and not checked.check.passed
-        assert "distinct control input" in checked.check.error
+        # One observed example: the proposal is verified on that one request.
+        assert len(calls) == 0 and skip is None and checked.check.passed
+        assert checked.check.control_input is None
     else:
         assert len(calls) == 1
 
@@ -152,10 +153,6 @@ def test_repeated_primary_arguments_do_not_repeat_failed_model_proposal(monkeypa
         action.backend.fields = {}
     checked, skip = asyncio.run(checker.check_action(action, ["alpha", "beta", "gamma", "delta"], describer=describe))
     assert skip is not None and not checked.check.passed
-    if examples == ["pinned"]:
-        assert "distinct control input" in checked.check.error
-        assert not calls and inputs == [{"q": "pinned"}]
-        return
     assert checked.check.error == "no records extracted from the response"
     assert len(calls) == 1
     assert inputs == ([{}] if examples is None else [{"q": value} for value in examples])
@@ -205,10 +202,8 @@ def test_dependent_probes_remain_sequential(monkeypatch, dependency):
     active = peak = 0
     inputs = []
 
-    async def send(backend, args, **kwargs):
+    async def send(backend, args):
         nonlocal active, peak
-        if dependency == "post":
-            assert kwargs.get("require_read_policy") is True
         inputs.append(args)
         active += 1
         peak = max(peak, active)
@@ -221,7 +216,9 @@ def test_dependent_probes_remain_sequential(monkeypatch, dependency):
     monkeypatch.setattr(checker, "send_http", send)
     action = candidate()
     if dependency == "post":
+        # A read POST is fired only on observed evidence.
         action.backend.method = "POST"
+        action.source = Source(page="https://books.test/", form_index=-1, submit="agent-observed")
     elif dependency == "write":
         action.tier = "reversible"
         action.backend.method = "POST"

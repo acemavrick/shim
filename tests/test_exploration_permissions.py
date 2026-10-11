@@ -11,7 +11,7 @@ def test_exploration_blocks_post_until_writes_are_enabled():
             outcomes.append("blocked")
         async def continue_():
             outcomes.append("sent")
-        route = SimpleNamespace(request=SimpleNamespace(method="POST", url="https://shop.test/cart"),
+        route = SimpleNamespace(request=SimpleNamespace(method="POST", url="https://shop.test/checkout"),
                                 abort=abort, continue_=continue_)
         explorer = AgentExplorer(None, "Find a laptop", allow_writes=allow_writes)
         await explorer._route_request(route)
@@ -43,12 +43,12 @@ def test_blocked_request_evidence_reaches_model_without_repeated_warnings():
         async def abort():
             pass
         explorer = AgentExplorer(complete, "Read products", on_event=events.append)
-        route = SimpleNamespace(request=SimpleNamespace(method="POST", url="https://shop.test/variant", resource_type="fetch"), abort=abort)
+        route = SimpleNamespace(request=SimpleNamespace(method="POST", url="https://shop.test/checkout", resource_type="fetch"), abort=abort)
         await explorer._route_request(route)
         await explorer._route_request(route)
         await explorer._ask_step("Page")
         assert len(events) == 1
         assert events[0]["method"] == "POST"
-        assert "https://shop.test/variant" in prompts[0]
+        assert "https://shop.test/checkout" in prompts[0]
         assert "safety is not established" in prompts[0]
     asyncio.run(run())

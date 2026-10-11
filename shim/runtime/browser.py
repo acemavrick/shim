@@ -5,7 +5,7 @@ import re
 from urllib.parse import parse_qsl, quote, urlsplit
 
 from ..config import config
-from ..safety import post_is_approved
+from ..safety import exploration_request_allowed
 from .http import RawResponse
 
 
@@ -31,13 +31,14 @@ async def replay_browser(backend, args):
         parts = urlsplit(request.url)
         same_origin = (parts.scheme, parts.netloc) == (origin.scheme, origin.netloc)
         # Third-party assets are not needed to prove a capability; never execute their requests.
-        approved = same_origin and request.method in {"GET", "HEAD", "OPTIONS"}
-        if same_origin and request.method == "POST":
+        body = None
+        if request.method == "POST":
             try:
                 body = request.post_data_json
             except Exception:
                 body = dict(parse_qsl(request.post_data or ""))
-            approved = post_is_approved(request.url, body, config().read_post_rules)
+        approved = same_origin and exploration_request_allowed(
+            request.method, request.url, body, allow_writes=False, rules=config().read_post_rules)
         if approved:
             await route.continue_()
         else:

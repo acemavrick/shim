@@ -13,52 +13,55 @@ from .runtime.http import close_client, invoke_action
 TIER_MARK = {"read": "read", "reversible": "write", "irreversible": "DANGER"}
 
 
-async def _compile(args: argparse.Namespace) -> int:
-    def show(event: dict) -> None:
-        kind = event.get("type")
-        if kind == "stage":
-            extra = {k: v for k, v in event.items() if k not in ("type", "stage")}
-            if event["stage"] == "links":
-                extra = {"patterns": [u.split("//", 1)[-1] for u in event["patterns"]][:6]}
-            print(f"\n[{event['stage']}] {extra}", flush=True)
-        elif kind == "page":
-            print(f"  page  {event['url']}", flush=True)
-        elif kind == "action":
-            req = ",".join(event["required"])
-            print(
-                f"  TOOL  {event['name']}({req})  [{TIER_MARK[event['tier']]}]"
-                f"  {event['items_found']} items",
-                flush=True,
-            )
-        elif kind == "action_failed":
-            print(f"  drop  {event['name']}  ({event['error']})", flush=True)
-        elif kind == "agent_step":
-            mark = "x" if event.get("failed") else ">"
-            print(f"  agent {mark} {event['action']} {event['name']!r}  {event['why']}"
-                  + (f"  [{event['failed']}]" if event.get("failed") else ""), flush=True)
-        elif kind == "agent_done":
-            print(f"  agent done: {event['steps']} step(s), {event['observed']} request(s) observed,"
-                  f" proposed {event['tools']}\n        {event['summary']}", flush=True)
-        elif kind == "agent_write_down":
-            print(f"  saving interface from {event['pages']} page(s) and {event['requests']} request(s)", flush=True)
-        elif kind == "agent_write_down_failed":
-            print(f"  interface proposal failed: {event['error']}", flush=True)
-        elif kind == "procedure":
-            print(f"  HOWTO {event['intent']!r}: {event['steps']} step(s)", flush=True)
-        elif kind == "describe_done":
-            print(f"  model: {event['calls']} proposal(s), {event['failures']} failed", flush=True)
-        elif kind == "model_usage":
-            print(f"  model {event.get('provider', 'Anthropic')}: {event['elapsed_ms'] / 1000:.2f}s, "
-                  f"{event['input_tokens']} input / {event['output_tokens']} output tokens", flush=True)
-        elif kind == "model_error":
-            print(f"  model failed: {event['error']}", flush=True)
-        elif kind == "timing":
-            print(f"  time {event['stage']}: {event['elapsed_ms'] / 1000:.2f}s", flush=True)
-        elif kind == "records":
-            print(f"  DATA  {event['count']} declared record(s): {', '.join(event['types'])}", flush=True)
-        elif kind == "skip":
-            print(f"  skip  {event['what']}  ({event['reason']})", flush=True)
+def print_event(event: dict) -> None:
+    kind = event.get("type")
+    if kind == "stage":
+        extra = {k: v for k, v in event.items() if k not in ("type", "stage")}
+        if event["stage"] == "links":
+            extra = {"patterns": [u.split("//", 1)[-1] for u in event["patterns"]][:6]}
+        print(f"\n[{event['stage']}] {extra}", flush=True)
+    elif kind == "page":
+        print(f"  page  {event['url']}", flush=True)
+    elif kind == "action":
+        req = ",".join(event["required"])
+        print(
+            f"  TOOL  {event['name']}({req})  [{TIER_MARK[event['tier']]}]"
+            f"  {event['items_found']} items",
+            flush=True,
+        )
+    elif kind == "action_failed":
+        print(f"  drop  {event.get('name') or event.get('candidate_id')}  ({event.get('error')})", flush=True)
+    elif kind == "agent_step":
+        mark = "x" if event.get("failed") else ">"
+        print(f"  agent {mark} {event['action']} {event['name']!r}  {event['why']}"
+              + (f"  [{event['failed']}]" if event.get("failed") else ""), flush=True)
+    elif kind == "agent_done":
+        print(f"  agent done: {event['steps']} step(s), {event['observed']} request(s) observed,"
+              f" proposed {event['tools']}\n        {event['summary']}", flush=True)
+    elif kind == "agent_write_down":
+        print(f"  saving interface from {event['pages']} page(s) and {event['requests']} request(s)", flush=True)
+    elif kind == "agent_write_down_failed":
+        print(f"  interface proposal failed: {event['error']}", flush=True)
+    elif kind == "procedure":
+        print(f"  HOWTO {event['intent']!r}: {event['steps']} step(s)", flush=True)
+    elif kind == "describe_done":
+        print(f"  model: {event['calls']} proposal(s), {event['failures']} failed", flush=True)
+    elif kind == "model_usage":
+        print(f"  model {event.get('provider', 'Anthropic')}: {event['elapsed_ms'] / 1000:.2f}s, "
+              f"{event['input_tokens']} input / {event['output_tokens']} output tokens", flush=True)
+    elif kind == "model_error":
+        print(f"  model failed: {event['error']}", flush=True)
+    elif kind == "timing":
+        print(f"  time {event['stage']}: {event['elapsed_ms'] / 1000:.2f}s", flush=True)
+    elif kind == "records":
+        print(f"  DATA  {event['count']} declared record(s): {', '.join(event['types'])}", flush=True)
+    elif kind == "skip":
+        detail = f": {event['detail']}" if event.get("detail") else ""
+        print(f"  skip  {event['what']}  ({event['reason']}{detail})", flush=True)
 
+
+
+async def _compile(args: argparse.Namespace) -> int:
     manifest = await compile_site(
         args.url,
         max_pages=args.max_pages,
@@ -67,7 +70,7 @@ async def _compile(args: argparse.Namespace) -> int:
         use_browser=args.browser,
         intent=args.intent,
         agent=args.agent,
-        emit=show,
+        emit=print_event,
     )
     cov = manifest.coverage
     print(

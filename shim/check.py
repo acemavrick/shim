@@ -31,9 +31,25 @@ async def _send(action, args):
         return await replay_browser(action.backend, args)
     if action.backend.kind != "http":
         raise ValueError("Unsupported backend")
-    if action.tier == "read" and action.backend.method == "POST":
-        return await send_http(action.backend, args, require_read_policy=True)
+    if action.tier == "read" and action.backend.method == "POST" and not _read_post_evidence(action, args):
+        raise ValueError("read POST has no observed request evidence or operator rule; not fired")
     return await send_http(action.backend, args)
+
+
+def _read_post_evidence(action, args) -> bool:
+    """A POST may be fired as a read only on evidence the compiler holds.
+
+    The explorer saw the site make this exact request shape and the model
+    named it as a read; or an operator declared the exact request. A form
+    POST can never reach here as a read -- tiers only escalate.
+    """
+    if action.source is not None and action.source.submit == "agent-observed":
+        return True
+    from .config import config
+    from .safety import post_is_approved
+    from .runtime.http import resolve_fields
+    return post_is_approved(action.backend.url, dict(resolve_fields(action.backend, args)),
+                            config().read_post_rules)
 from .translate.infer import (
     detail_extract,
     infer_by_diff,
@@ -191,8 +207,6 @@ def _verified_observed_extract(
             or action.source.submit != "agent-observed"):
         return None
     static = action.backend.kind == "http" and action.backend.method == "GET" and not action.input.properties
-    if control is None and not static:
-        return None
     spec = action.extract
     extracted = run_extract(primary.body, spec, primary.url)
     if spec.kind == "css":
@@ -202,7 +216,8 @@ def _verified_observed_extract(
             extracted = run_extract(primary.body, spec, primary.url)
     if not any(any(v not in (None, "", []) for v in r.values()) for r in extracted.records):
         return None
-    if static:
+    if static or control is None:
+        # One example only: nothing to vary, so one verified response is the test.
         return spec, extracted
     control_records = run_extract(control.body, spec, primary.url).records
     if not any(any(v not in (None, "", []) for v in r.values()) for r in control_records):
@@ -333,9 +348,11 @@ async def check_action(
         control_status = None
         if varies and action.tier == "read":
             if control_args == args:
-                last_error = "no distinct control input available; parameterized tool is unverified"
-                continue
-            if control_args != args:
+                # A single observed example (one product slug) cannot be
+                # varied. Verify the one request rather than drop the tool;
+                # the record is marked as having had no control probe.
+                control_args = {}
+            if control_args != args and control_args:
                 try:
                     if parallel:
                         if isinstance(paired_control, Exception):

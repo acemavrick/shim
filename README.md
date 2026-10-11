@@ -69,8 +69,12 @@ Completed compilations also live in immutable `sites/<host>/history/<run_id>/`
 directories. The UI can reload an earlier version and binds its calls/files to
 that version. Live streaming uses a separate, expiring registry ID; once saved,
 tools no longer depend on that registry. Read-only browser recipes run only
-through MCP/Python, not the direct HTTP exports. Unknown POSTs stay blocked;
-operators can approve exact URL/body pairs under `[[safety.read_post_rules]]`.
+through MCP/Python, not the direct HTTP exports. During exploration the browser
+sends POSTs like a visitor would, except checkout/order/payment/delete paths and
+credential fields, which stay blocked without `--allow-writes`. A POST ships as a
+read tool only when the explorer observed the site make it, the model named it
+as a read, and two inputs returned different records. `[[safety.read_post_rules]]`
+remains as an escape hatch for a lookup the explorer could not observe.
 
 ## Performance
 

@@ -310,3 +310,60 @@ def test_browser_closes_when_initial_navigation_fails_or_is_cancelled(monkeypatc
         assert closed == [True]
 
     asyncio.run(run())
+
+
+def test_read_state_retries_once_when_the_page_is_mid_navigation():
+    attempts = []
+
+    class Locator:
+        async def aria_snapshot(self):
+            attempts.append("snapshot")
+            if len(attempts) == 1:
+                raise RuntimeError("Execution context was destroyed")
+            return "- heading \"Home\""
+        async def evaluate_all(self, js):
+            return []
+
+    page = SimpleNamespace(locator=lambda selector: Locator(), url="https://site.test/")
+    result = AgentResult()
+    snapshot, anchors = asyncio.run(AgentExplorer(None, "Learn")._read_state(page, None, result, 0, False))
+    assert snapshot == '- heading "Home"' and anchors == [] and len(attempts) == 2
+
+
+def test_persistent_page_read_failure_ends_exploration_but_keeps_the_record(monkeypatch):
+    playwright = import_module("playwright.async_api")
+    prompts = []
+
+    async def complete(system, prompt):
+        prompts.append(prompt)
+        return '{"site_description": "A site", "tools": [], "notes": []}'
+
+    async def run():
+        async def noop(*args, **kwargs):
+            pass
+        class Locator:
+            async def aria_snapshot(self):
+                raise RuntimeError("Execution context was destroyed")
+            async def evaluate_all(self, js):
+                return []
+        page = SimpleNamespace(on=lambda *a: None, goto=noop, wait_for_load_state=noop,
+                               locator=lambda selector: Locator(), url="https://site.test/")
+        async def new_page():
+            return page
+        context = SimpleNamespace(route=noop, new_page=new_page)
+        async def new_context(**kwargs):
+            return context
+        browser = SimpleNamespace(new_context=new_context, close=noop)
+        async def launch(**kwargs):
+            return browser
+        class Playwright:
+            async def __aenter__(self):
+                return SimpleNamespace(chromium=SimpleNamespace(launch=launch))
+            async def __aexit__(self, *args):
+                pass
+        monkeypatch.setattr(playwright, "async_playwright", Playwright)
+        return await AgentExplorer(complete, "Learn", step_budget=3).run("https://site.test/")
+
+    result = asyncio.run(run())
+    assert any("Execution context was destroyed" in note for note in result.notes)
+    assert result.site_description == "A site"  # the write-down still ran

@@ -48,11 +48,18 @@ def validate_inputs(tool, observed):
     for name, spec in tool.inputs.items():
         key = ("path", name) if spec.get("in") == "path" else ("wire", spec.get("wire") or name)
         actual = values.get(key, set())
-        if spec.get("examples") and any((str(v).lower() if isinstance(v, bool) else str(v)) not in actual for v in spec["examples"]):
-            return f"input {name} contains unobserved example values"
+        if spec.get("examples"):
+            # Keep the examples the site was actually asked for; a model often
+            # pads them with ids it read off a listing. None left means the
+            # input itself was never exercised.
+            observed = [v for v in spec["examples"]
+                        if (str(v).lower() if isinstance(v, bool) else str(v)) in actual]
+            if not observed:
+                return f"input {name} contains unobserved example values"
+            spec["examples"] = observed
     for wire in tool.constants:
         if len(values.get(("wire", wire), set())) > 1:
             return f"varying field {wire} cannot be pinned as a constant"
-        if re.search(r"token|session|cookie|auth|signature", wire, re.I):
+        if re.search(r"token|session|cookie|auth|signature|api_?key", wire, re.I):
             return f"session field {wire} cannot be pinned as a constant"
     return None

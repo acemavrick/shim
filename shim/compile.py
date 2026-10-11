@@ -17,6 +17,7 @@ from time import perf_counter
 from urllib.parse import urlsplit
 
 from .check import check_action, probe_terms, sample_args
+from .errors import exception_detail as _exception_detail
 from .explore.crawl import crawl, _safe_root_redirect
 from .manifest import Coverage, Manifest, Page, Skip
 from .translate.from_form import dedupe_actions, form_to_actions
@@ -308,7 +309,7 @@ async def _compile_site(
         try:
             return await explorer.run(url)
         except Exception as exc:
-            skip = Skip(what="agent", reason="fetch-error", detail=f"{type(exc).__name__}: {exc}")
+            skip = Skip(what="agent", reason="fetch-error", detail=_exception_detail(exc))
             coverage.skipped.append(skip)
             await _emit(emit, {"type": "skip", **skip.model_dump()})
             return None

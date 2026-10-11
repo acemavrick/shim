@@ -399,3 +399,11 @@ def test_model_names_stay_unique_and_failed_candidates_do_not_reserve_names(tmp_
     assert manifest.coverage.actions_generated == 4 and manifest.coverage.actions_shipped == len(set(names)) == 3
     assert len([skip for skip in manifest.coverage.skipped if skip.reason == 'check-failed']) == 1
     assert events[-1]['type'] == 'done' and events[-1]['shipped'] == 3
+
+
+def test_agent_failure_detail_names_the_real_exception():
+    from shim.compile import _exception_detail
+    nested = ExceptionGroup("unhandled errors in a TaskGroup",
+                            [ExceptionGroup("inner", [TimeoutError("Page.locator: Timeout 5000ms exceeded")])])
+    assert _exception_detail(nested) == "TimeoutError: Page.locator: Timeout 5000ms exceeded"
+    assert _exception_detail(ValueError("plain")) == "ValueError: plain"

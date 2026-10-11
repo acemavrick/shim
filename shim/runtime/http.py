@@ -165,7 +165,7 @@ def resolve_fields(
     return params
 
 
-async def send_http(backend: HttpBackend, args: dict[str, Any], *, require_read_policy: bool = False) -> RawResponse:
+async def send_http(backend: HttpBackend, args: dict[str, Any]) -> RawResponse:
     page_values = None
     if backend.refetch_from and any(f.from_ == "page" for f in backend.fields.values()):
         page_values = await _refetch_hidden_fields(backend.refetch_from)
@@ -185,12 +185,6 @@ async def send_http(backend: HttpBackend, args: dict[str, Any], *, require_read_
         parts = urlsplit(target)
         url = urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
         return await _polite_fetch("GET", url, params=params, headers=backend.headers)
-
-    if require_read_policy:
-        from ..config import config
-        from ..safety import post_is_approved
-        if not post_is_approved(target, dict(params), config().read_post_rules):
-            raise ValueError("Read POST is not approved by operator policy")
 
     # Encode the body ourselves: httpx treats a non-dict `data=` as a byte
     # stream, which on an AsyncClient fails as "sync request", and a dict
@@ -231,10 +225,9 @@ async def invoke_action(action: Action, args: dict[str, Any]) -> CallResult:
         from .browser import replay_browser
         res = await replay_browser(action.backend, args)
     elif action.backend.kind == "http":
-        if action.tier == "read" and action.backend.method == "POST":
-            res = await send_http(action.backend, args, require_read_policy=True)
-        else:
-            res = await send_http(action.backend, args)
+        # A read POST reaches here only after the check gate verified it
+        # against an observed request, so the manifest is the authorization.
+        res = await send_http(action.backend, args)
     else:
         raise NotImplementedError(
             f'action "{action.name}" uses the {action.backend.kind} backend, '
