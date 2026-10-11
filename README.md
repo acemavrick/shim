@@ -129,3 +129,10 @@ protection in the HTTP trial; the compiler records that limitation and stops.
 
 See [OpenAI's non-interactive CLI documentation](https://learn.chatgpt.com/docs/developer-commands#codex-exec)
 for the CLI invocation and JSON event format.
+
+## Demo video
+
+[Watch the 54-second BeFreed demo](reports/demo/shim-befreed-demo.mp4), with English
+narration and captions. It shows the actual website, an explicitly labelled replay
+of real compile events, a saved tool schema, a fresh HTTP 200 call, and exported
+interfaces. [Script and reproduction notes](reports/demo/README.md) are included.

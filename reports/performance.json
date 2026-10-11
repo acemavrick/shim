@@ -332,5 +332,17 @@
     "site": "Local 600ms fixture",
     "backend": "Codex CLI naming enabled; no browser agent; actual FastAPI SSE and Playwright browser",
     "note": "This is distinct from the model-free 12-page benchmark; UI max_pages is 10."
+  },
+  "demo_video": {
+    "path": "reports/demo/shim-befreed-demo.mp4",
+    "duration_s": 54.04644,
+    "narration_language": "English (en-US, Samantha)",
+    "captions_language": "English",
+    "incremental_segment": "Captured real compile events replayed with waits compressed and explicitly labelled",
+    "live_call": {
+      "status": 200,
+      "records": 1,
+      "elapsed_s": 0.255
+    }
   }
 }

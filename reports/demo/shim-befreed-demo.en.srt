@@ -1,0 +1,23 @@
+1
+00:00:00,000 --> 00:00:08,000
+Websites are built for people. Agents need reusable tools, with clear inputs, that they can call directly.
+
+2
+00:00:08,000 --> 00:00:16,000
+Here is BeFreed's public book page. A person opens a book and reads its title, author, and categories.
+
+3
+00:00:16,000 --> 00:00:25,000
+Shim discovers tools, then verifies them before allowing calls. This real compilation replay compresses the waiting time.
+
+4
+00:00:25,000 --> 00:00:34,000
+Load the saved compilation. Book details become a reusable tool, with a typed slug input and saved extraction rules.
+
+5
+00:00:34,000 --> 00:00:46,000
+Now call the live website. The response is HTTP two hundred, with structured book data. Repeated calls use HTTP directly, without another model invocation.
+
+6
+00:00:46,000 --> 00:00:54,000
+Compile once. Export OpenAPI and website documentation, and serve the verified tools through MCP.
